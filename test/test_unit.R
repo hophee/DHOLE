@@ -580,7 +580,11 @@ assert_true(
   "Minus-strand arm labels were not oriented to the target"
 )
 
-circular_ptarget <- DNAString("GCAGGGGACTAGTCCCCCT")
+cassette_sequence <- paste0(
+  "GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCT", "CCCC",
+  reverse_complement_string("AGTTGACGCTAAAAAAAGCACCGACTCGGTGCC")
+)
+circular_ptarget <- DNAString(paste0("GCAGGGGACTAGT", cassette_sequence, "CT"))
 assembly_bridge <- "ATGACTGCCCGCAAG"
 assembly_n20 <- c(
   "ACGTACGTACGTACGTACGT",
@@ -609,7 +613,7 @@ ptarget_model <- model_edited_ptargets(
 )
 assert_true(
   ptarget_model$restriction_pair$orientation == "+" &&
-    identical(ptarget_model$restriction_pair$site2_start, 18L),
+    ptarget_model$restriction_pair$site2_start == 14L + nchar(cassette_sequence),
   "Circular restriction site crossing the FASTA origin was not found"
 )
 assert_true(

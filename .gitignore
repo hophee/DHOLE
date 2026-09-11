@@ -3,17 +3,18 @@
 *.Rproj
 
 # Installed/downloaded dependencies
-/callPrimer3.R
 /chopchop/
 /primer3/
 
 # Local archival/work directory
 /tempo/
 /WORKING_NOTES.md
+/problems.md
 /test/*
 !/test/test_run.sh
 !/test/test_unit.R
 !/test/test_screening_fixture.R
+!/test/test_regressions.R
 
 # Local technical specifications and dated archives
 /TECHNICAL_SPECIFICATION.md
@@ -26,3 +27,6 @@
 # Other
 /protocol.md
 /poster.pdf
+/DHOLE_ARCHITECTURE_RU.md
+/README_AUDIT.md
+/WORKING_ON_*

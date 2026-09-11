@@ -6,7 +6,14 @@ suppressPackageStartupMessages(library(dplyr))
 suppressPackageStartupMessages(library(readr))
 suppressPackageStartupMessages(library(argparser))
 
-source("callPrimer3.R")
+.dhole_project_dir <- local({
+  source_files <- Filter(Negate(is.null), lapply(sys.frames(), function(x) x$ofile))
+  script <- if (length(source_files)) tail(source_files, 1L)[[1]] else {
+    sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[[1]])
+  }
+  dirname(normalizePath(script, mustWork = TRUE))
+})
+source(file.path(.dhole_project_dir, "callPrimer3.R"), local = TRUE)
 
 `%||%` <- function(x, y) {
   if (is.null(x)) y else x
@@ -25,9 +32,21 @@ normalize_restriction_site <- function(site, argument_name) {
 }
 
 reverse_complement_string <- function(sequence) {
-  paste0(
-    rev(strsplit(chartr("ACGT", "TGCA", toupper(sequence)), "")[[1]]),
-    collapse = ""
+  as.character(reverseComplement(DNAString(toupper(sequence))))
+}
+
+design_bridge <- function(design_class, deleted_nt) {
+  substr("ATGACTGCCCGCAAG", 1L,
+         if (design_class == "cds") 15L - deleted_nt %% 3L else 15L)
+}
+
+homology_primer_pair <- function(primer_row, side, bridge, site2) {
+  c(
+    paste0(if (side == "left") "AGCGTCAACT" else bridge,
+           primer_row$PRIMER_LEFT_SEQUENCE[[1]]),
+    paste0(if (side == "left") reverse_complement_string(bridge) else {
+      paste0("ACG", reverse_complement_string(site2))
+    }, primer_row$PRIMER_RIGHT_SEQUENCE[[1]])
   )
 }
 
@@ -43,7 +62,7 @@ circular_match_positions <- function(sequence, motif) {
     sequence,
     if (motif_length > 1L) substr(sequence, 1L, motif_length - 1L) else ""
   )
-  hits <- gregexpr(motif, extended, fixed = TRUE)[[1]]
+  hits <- start(matchPattern(DNAString(motif), DNAString(extended), fixed = TRUE))
   as.integer(unique(hits[hits > 0L & hits <= sequence_length]))
 }
 
@@ -87,7 +106,18 @@ find_oriented_restriction_pair <- function(plasmid, site1, site2) {
   if (!length(orientations)) {
     stop("site1 и site2 имеют несовместимую ориентацию", call. = FALSE)
   }
-  orientation <- if ("+" %in% orientations) "+" else "-"
+  cassette <- NULL
+  if (length(orientations) > 1L) {
+    cassette <- locate_circular_pcr_template(
+      plasmid,
+      "GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCT",
+      "AGTTGACGCTAAAAAAAGCACCGACTCGGTGCC",
+      nchar(sequence)
+    )
+    orientation <- cassette$strand
+  } else {
+    orientation <- orientations[[1]]
+  }
   oriented <- if (orientation == "+") {
     sequence
   } else {
@@ -105,6 +135,13 @@ find_oriented_restriction_pair <- function(plasmid, site1, site2) {
   )
   site2_rotated <- ((site2_start - site1_start) %% nchar(oriented)) + 1L
   replaced_length <- site2_rotated + nchar(site2) - 1L
+  if (!is.null(cassette)) {
+    cassette_start <- circular_match_positions(rotated, as.character(cassette$sequence))
+    if (length(cassette_start) != 1L || cassette_start <= nchar(site1) ||
+        cassette_start + length(cassette$sequence) - 1L >= site2_rotated) {
+      stop("sgRNA-кассета не лежит между site1 и site2", call. = FALSE)
+    }
+  }
   if (
     site2_rotated <= nchar(site1) ||
       replaced_length >= nchar(oriented)
@@ -303,7 +340,7 @@ simulate_full_primer_pcr <- function(
     processors = 1L
   )
   expected <- which(as.character(products) == primed_template)
-  if (length(expected) != 1L) {
+  if (length(products) != 1L || length(expected) != 1L) {
     stop(
       sprintf("DECIPHER не вернул однозначный PCR-продукт для %s", reaction),
       call. = FALSE
@@ -1261,7 +1298,10 @@ enumerate_primer_amplicons <- function(sites, references, config) {
             (raw_end - 1L) %% original_length + 1L
           } else raw_end,
           product_size = product_size,
-          sequence = if (product_orientation == "+") {
+          sequence = if (product_size < config$min_product_size ||
+                         product_size > config$max_product_size) {
+            NA_character_
+          } else if (product_orientation == "+") {
             as.character(subseq(subject, raw_start, raw_end))
           } else {
             as.character(reverseComplement(subseq(subject, raw_start, raw_end)))
@@ -1400,21 +1440,31 @@ evaluate_pair_specificity <- function(
   reverse_probe,
   references,
   expected_product,
-  config = primer_qc_defaults()
+  config = primer_qc_defaults(),
+  binding_site_cache = NULL,
+  reference_key = NULL
 ) {
+  if (!is.null(binding_site_cache) && is.null(reference_key)) {
+    reference_key <- reference_digest(references)
+  }
+  find_sites <- function(probe, primer_id) {
+    if (is.null(binding_site_cache)) {
+      return(enumerate_primer_binding_sites(probe, primer_id, references, config))
+    }
+    key <- paste0("binding_sites:", digest::digest(list(
+      reference_key, toupper(as.character(probe)), primer_id,
+      config[c("max_mismatches", "critical_3p_bases", "max_3p_mismatches",
+               "max_product_size")]
+    )))
+    if (!exists(key, binding_site_cache, inherits = FALSE)) {
+      assign(key, enumerate_primer_binding_sites(probe, primer_id, references, config),
+             binding_site_cache)
+    }
+    get(key, binding_site_cache, inherits = FALSE)
+  }
   sites <- bind_rows(
-    enumerate_primer_binding_sites(
-      forward_probe,
-      "forward",
-      references,
-      config
-    ),
-    enumerate_primer_binding_sites(
-      reverse_probe,
-      "reverse",
-      references,
-      config
-    )
+    find_sites(forward_probe, "forward"),
+    find_sites(reverse_probe, "reverse")
   )
   amplicons <- enumerate_primer_amplicons(sites, references, config)
   reduced <- match_probe_pair_all_references(
@@ -2093,6 +2143,9 @@ write_run_parameters <- function(input, targets, path) {
 }
 
 make_design_input <- function(cli) {
+  project_tool <- function(path, default) {
+    if (identical(path, default)) file.path(.dhole_project_dir, path) else path
+  }
   # TODO: only a complete single-contig bacterial genome is supported for now.
   # Multi-contig FASTA/GFF input needs contig-aware sequence extraction.
   genome_set <- readDNAStringSet(cli$genome[[1]], nrec = 1)
@@ -2129,10 +2182,12 @@ make_design_input <- function(cli) {
     cas_plasmid = if (length(cli$cas_plasmid)) cli$cas_plasmid[[1]] else NULL,
     output_dir = cli$output_dir[[1]],
     tools = list(
-      chopchop_script = cli$chopchop_script[[1]],
-      chopchop_python = cli$chopchop_python[[1]],
-      primer3 = cli$primer3[[1]],
-      primer3_config = "primer3/src/primer3_config"
+      chopchop_script = project_tool(cli$chopchop_script[[1]], "chopchop/chopchop.py"),
+      chopchop_python = if (cli$chopchop_python[[1]] == "chopchop-python") {
+        file.path(.dhole_project_dir, "tools", "chopchop-python")
+      } else cli$chopchop_python[[1]],
+      primer3 = project_tool(cli$primer3[[1]], "primer3/src/primer3_core"),
+      primer3_config = file.path(.dhole_project_dir, "primer3/src/primer3_config")
     ),
     parameters = list(
       n20_mn = cli$n20_mn,
@@ -2237,11 +2292,24 @@ prepare_chopchop_assets <- function(input) {
   index_dir <- normalizePath(index_dir)
   two_bit <- file.path(index_dir, paste0(genome_name, ".2bit"))
   bowtie_prefix <- file.path(index_dir, genome_name)
-  if (!file.exists(two_bit)) {
+  index_files <- c(two_bit, paste0(bowtie_prefix, c(
+    ".1.ebwt", ".2.ebwt", ".3.ebwt", ".4.ebwt", ".rev.1.ebwt", ".rev.2.ebwt"
+  )))
+  checksum_file <- paste0(bowtie_prefix, ".fasta.md5")
+  checksum <- unname(tools::md5sum(input$genome_path))
+  if (is.na(checksum)) stop("Не удалось прочитать FASTA для индексации", call. = FALSE)
+  reusable <- file.exists(checksum_file) &&
+    identical(readLines(checksum_file, warn = FALSE), checksum) &&
+    all(file.exists(index_files)) && all(file.size(index_files) > 0L)
+  if (!reusable) {
+    # A marker is written only after both tools completed and every file exists.
+    unlink(c(checksum_file, index_files))
     run_tool("faToTwoBit", c(input$genome_path, two_bit))
-  }
-  if (!file.exists(paste0(bowtie_prefix, ".1.ebwt"))) {
     run_tool("bowtie-build", c(input$genome_path, bowtie_prefix))
+    if (!all(file.exists(index_files)) || any(file.size(index_files) == 0L)) {
+      stop("Индексация генома не создала полный комплект файлов", call. = FALSE)
+    }
+    writeLines(checksum, checksum_file)
   }
   list(name = genome_name, directory = index_dir)
 }
@@ -2347,7 +2415,8 @@ filter_grnas <- function(
   table_path,
   feature,
   design_class,
-  offtarget_thresholds
+  offtarget_thresholds,
+  genome = NULL
 ) {
   grnas <- read_tsv(table_path, show_col_types = FALSE) |>
     janitor::clean_names()
@@ -2394,8 +2463,10 @@ filter_grnas <- function(
     mutate(
       genomic_start = as.numeric(sub("^.*:", "", genomic_location)),
       genomic_end = genomic_start + 22L,
-      n20_start = genomic_start,
-      n20_end = genomic_start + 19L,
+      n20_start = genomic_start + ifelse(strand == "-", 3L, 0L),
+      n20_end = n20_start + 19L,
+      pam_start = genomic_start + ifelse(strand == "-", 0L, 20L),
+      pam_end = pam_start + 2L,
       mid_closeness = abs(
         (feature$start + feature$end) %/%
           2 -
@@ -2410,6 +2481,22 @@ filter_grnas <- function(
       call. = FALSE
     )
   }
+  if (any(!grnas$strand %in% c("+", "-"))) {
+    stop("Некорректная цепь N20 в таблице CHOPCHOP", call. = FALSE)
+  }
+  if (!is.null(genome) && nrow(grnas)) {
+    if (any(grnas$genomic_start < 1L | grnas$genomic_end > length(genome))) {
+      stop("Участок N20/PAM выходит за границы генома", call. = FALSE)
+    }
+    matches <- vapply(seq_len(nrow(grnas)), function(i) {
+      sequence <- genome[grnas$genomic_start[[i]]:grnas$genomic_end[[i]]]
+      if (grnas$strand[[i]] == "-") sequence <- reverseComplement(sequence)
+      identical(as.character(sequence), toupper(grnas$target_sequence[[i]]))
+    }, logical(1))
+    if (!all(matches)) {
+      stop("Последовательность N20/PAM CHOPCHOP не совпадает с геномом", call. = FALSE)
+    }
+  }
   if (design_class == "cds") {
     grnas <- filter(grnas, mid_closeness <= 0.18)
   }
@@ -2417,9 +2504,9 @@ filter_grnas <- function(
 }
 
 prepare_grna_pool <- function(grnas, n20_mn, strand_mode) {
-  if (n20_mn > 1L && strand_mode == "plus") {
+  if (strand_mode == "plus") {
     grnas <- filter(grnas, strand == "+")
-  } else if (n20_mn > 1L && strand_mode == "minus") {
+  } else if (strand_mode == "minus") {
     grnas <- filter(grnas, strand == "-")
   }
   if (nrow(grnas) < n20_mn) {
@@ -2666,20 +2753,21 @@ append_primer_qc_trace <- function(
 ) {
   if (!is.null(specificity)) {
     sites <- specificity$binding_sites
-    sites$reaction <- reaction
-    sites$pair_id <- pair_id
+    sites$reaction <- rep(reaction, nrow(sites))
+    sites$pair_id <- rep(pair_id, nrow(sites))
     trace$binding_sites[[length(trace$binding_sites) + 1L]] <- sites
     amplicons <- specificity$amplicons
-    amplicons$reaction <- reaction
-    amplicons$pair_id <- pair_id
+    amplicons$reaction <- rep(reaction, nrow(amplicons))
+    amplicons$pair_id <- rep(pair_id, nrow(amplicons))
     trace$amplicons[[length(trace$amplicons) + 1L]] <- amplicons
   }
   if (!is.null(openprimer)) {
     metrics <- openprimer$metrics
-    metrics$pair_id <- pair_id
+    metrics$pair_id <- rep(pair_id, nrow(metrics))
     trace$openprimer[[length(trace$openprimer) + 1L]] <- metrics
   }
   if (!is.null(ranking)) {
+    ranking$selected_for_attempt <- ranking$selected
     trace$ranking[[length(trace$ranking) + 1L]] <- ranking
   }
   invisible(trace)
@@ -2825,7 +2913,9 @@ cached_pair_specificity <- function(input, forward, reverse, expected_product) {
         reverse,
         input$specificity_references,
         expected_product,
-        config
+        config,
+        input$primer_qc_cache,
+        input$specificity_reference_digest
       ),
       input$primer_qc_cache
     )
@@ -3035,11 +3125,9 @@ design_homology_arms <- function(
     stop("primer3_core не найден", call. = FALSE)
   }
 
-  max_length_attempts <- max(
-    left_limits[["max"]] - left_limits[["opt"]],
-    right_limits[["max"]] - right_limits[["opt"]]
-  ) + 1L
-  for (attempt in seq_len(max_length_attempts)) {
+  attempt <- 0L
+  repeat {
+    attempt <- attempt + 1L
     left_length <- min(
       left_limits[["opt"]] + attempt - 1L,
       left_limits[["max"]]
@@ -3083,37 +3171,31 @@ design_homology_arms <- function(
       file.path(target_dir, "homology_arms_before_primer_search.fasta")
     )
     tm <- if (design_class == "cds") c(62.5, 63, 63.5) else c(60.5, 61, 62.5)
-    left <- tryCatch(
-      callPrimer3(
-        as.character(left_seq),
-        paste0(left_limits[["min"]], "-", length(left_seq)),
-        tm,
-        2,
-        "left_arm",
-        primer_num = 10,
-        primer3 = input$tools$primer3,
-        thermo.param = input$tools$primer3_config,
-        settings = settings,
-        report = file.path(target_dir, "left_arm_report.txt")
-      ),
-      error = function(e) NULL
+    left <- callPrimer3(
+      as.character(left_seq),
+      paste0(left_limits[["min"]], "-", length(left_seq)),
+      tm,
+      2,
+      "left_arm",
+      primer_num = 10,
+      primer3 = input$tools$primer3,
+      thermo.param = input$tools$primer3_config,
+      settings = settings,
+      report = file.path(target_dir, "left_arm_report.txt")
     )
-    right <- tryCatch(
-      callPrimer3(
-        as.character(right_seq),
-        paste0(right_limits[["min"]], "-", length(right_seq)),
-        tm,
-        2,
-        "right_arm",
-        primer_num = 10,
-        primer3 = input$tools$primer3,
-        thermo.param = input$tools$primer3_config,
-        settings = settings,
-        report = file.path(target_dir, "right_arm_report.txt")
-      ),
-      error = function(e) NULL
+    right <- callPrimer3(
+      as.character(right_seq),
+      paste0(right_limits[["min"]], "-", length(right_seq)),
+      tm,
+      2,
+      "right_arm",
+      primer_num = 10,
+      primer3 = input$tools$primer3,
+      thermo.param = input$tools$primer3_config,
+      settings = settings,
+      report = file.path(target_dir, "right_arm_report.txt")
     )
-    if (is.data.frame(left) && is.data.frame(right)) {
+    if (is.data.frame(left) && nrow(left) && is.data.frame(right) && nrow(right)) {
       arm <- list(
         left_start = left_start,
         left_end = left_end,
@@ -3160,11 +3242,7 @@ design_homology_arms <- function(
             return(invisible(NULL))
           }
           primer_row <- positions[[side]][primer_index, , drop = FALSE]
-          bridge <- "ATGACTGCCCGCAAG"
-          if (design_class == "cds") {
-            bridge <- substr(bridge, 1L, 15L - bridge_mod)
-          }
-          bridge_rc <- as.character(reverseComplement(DNAString(bridge)))
+          bridge <- design_bridge(design_class, bridge_mod)
           reaction <- if (side == "left") "LF_LR" else "RF_RR"
           physical_pair_id <- sprintf(
             "n20_%03d_attempt_%03d_%s_%02d_B%d",
@@ -3182,31 +3260,13 @@ design_homology_arms <- function(
               sprintf("pair_id=%s;reaction=%s", physical_pair_id, reaction)
             )
           }
-          result <- if (side == "left") {
-            evaluate_candidate_reaction(
-              input,
-              primer_row,
-              paste0("AGCGTCAACT", primer_row$PRIMER_LEFT_SEQUENCE[[1]]),
-              paste0(bridge_rc, primer_row$PRIMER_RIGHT_SEQUENCE[[1]]),
-              reaction,
-              physical_pair_id,
-              trace
-            )
-          } else {
-            evaluate_candidate_reaction(
-              input,
-              primer_row,
-              paste0(bridge, primer_row$PRIMER_LEFT_SEQUENCE[[1]]),
-              paste0(
-                "ACG",
-                reverse_complement_string(input$parameters$site2),
-                primer_row$PRIMER_RIGHT_SEQUENCE[[1]]
-              ),
-              reaction,
-              physical_pair_id,
-              trace
-            )
-          }
+          full_primers <- homology_primer_pair(
+            primer_row, side, bridge, input$parameters$site2
+          )
+          result <- evaluate_candidate_reaction(
+            input, primer_row, full_primers[[1]], full_primers[[2]],
+            reaction, physical_pair_id, trace
+          )
           assign(
             key,
             list(result = result, pair_id = physical_pair_id),
@@ -3825,9 +3885,18 @@ write_design_outputs <- function(
   target_dir,
   log_path = NULL
 ) {
+  trace <- arms$primer_qc_trace
+  trace$output_attempts <- (trace$output_attempts %||% 0L) + 1L
+  output_id <- paste0(arms$selected_pair_id, "_outputs_", trace$output_attempts)
+  completed <- FALSE
+  on.exit({
+    if (!completed) {
+      for (i in seq_along(trace$ranking)) trace$ranking[[i]]$selected <- FALSE
+    }
+  }, add = TRUE)
   pair <- arms$pair
   gap <- arms$ticks[[3]] - arms$ticks[[2]] - 1L
-  bridge <- "ATGACTGCCCGCAAG"
+  bridge <- design_bridge(design_class, gap)
   restrict_frame_shift <- if (design_class == "cds") {
     input$parameters$cds_fs
   } else {
@@ -3839,7 +3908,6 @@ write_design_outputs <- function(
     "not_restricted"
   }
   if (design_class == "cds") {
-    bridge <- substr(bridge, 1, 15 - (gap %% 3))
     if (!restrict_frame_shift && gap %% 3 != 0) {
       frame_status <- sprintf("bridge shortened to %d nt", nchar(bridge))
     }
@@ -3862,14 +3930,8 @@ write_design_outputs <- function(
   ))
   names(sgrnas) <- paste0(feature$display_name, "_sgF", seq_along(sgrnas))
   arm_primers <- DNAStringSet(c(
-    paste0("AGCGTCAACT", pair$PRIMER_LEFT_SEQUENCE[[1]]),
-    paste0(bridge_rc, pair$PRIMER_RIGHT_SEQUENCE[[1]]),
-    paste0(bridge, pair$PRIMER_LEFT_SEQUENCE[[2]]),
-    paste0(
-      "ACG",
-      reverse_complement_string(input$parameters$site2),
-      pair$PRIMER_RIGHT_SEQUENCE[[2]]
-    )
+    homology_primer_pair(pair[1, , drop = FALSE], "left", bridge, input$parameters$site2),
+    homology_primer_pair(pair[2, , drop = FALSE], "right", bridge, input$parameters$site2)
   ))
   names(arm_primers) <- paste0(
     feature$display_name,
@@ -3896,20 +3958,17 @@ write_design_outputs <- function(
     pmin(as.integer(offtarget_range + c(-200L, 200L)), length(input$genome))
   )
   screening_seq <- input$genome[screening_range[[1]]:screening_range[[2]]]
-  screening <- tryCatch(
-    callPrimer3(
-      as.character(screening_seq),
-      paste0(length(screening_seq) - 100L, "-", length(screening_seq)),
-      c(62.5, 63, 63.5),
-      2,
-      "genome_screening",
-      primer_num = 5,
-      primer3 = input$tools$primer3,
-      thermo.param = input$tools$primer3_config,
-      settings = file.path(target_dir, "primer3_settings.txt"),
-      report = file.path(target_dir, "genome_screening_report.txt")
-    ),
-    error = function(e) NULL
+  screening <- callPrimer3(
+    as.character(screening_seq),
+    paste0(length(screening_seq) - 100L, "-", length(screening_seq)),
+    c(62.5, 63, 63.5),
+    2,
+    "genome_screening",
+    primer_num = 5,
+    primer3 = input$tools$primer3,
+    thermo.param = input$tools$primer3_config,
+    settings = file.path(target_dir, "primer3_settings.txt"),
+    report = file.path(target_dir, "genome_screening_report.txt")
   )
   if (!is.data.frame(screening) || !nrow(screening)) {
     stop("Не удалось подобрать скрининговые праймеры", call. = FALSE)
@@ -3923,7 +3982,7 @@ write_design_outputs <- function(
   screening_ranking <- list()
   for (screening_index in seq_len(nrow(screening))) {
     screening_row <- screening[screening_index, , drop = FALSE]
-    pair_id <- sprintf("screening_%02d", screening_index)
+    pair_id <- sprintf("%s_screening_%02d", output_id, screening_index)
     if (!is.null(log_path)) {
       append_design_log(
         log_path,
@@ -4011,21 +4070,13 @@ write_design_outputs <- function(
   screening_path <- file.path(target_dir, "screening_primers.fasta")
   writeXStringSet(screening_primers, screening_path)
 
-  starts <- pair$PRIMER_LEFT_pos + pair$PRIMER_LEFT_len
-  ends <- pair$PRIMER_RIGHT_pos - pair$PRIMER_RIGHT_len
-  prefix <- if (offtarget_range[[1]] > 1L) {
-    input$genome[1:offtarget_range[[1]]]
-  } else {
-    DNAString("")
-  }
-  suffix <- input$genome[offtarget_range[[2]]:length(input$genome)]
+  # ticks are sorted genomic coordinates of the complete selected arms.
+  # Preserve both arms, including primer sites, in the original FASTA orientation.
   edited_genome <- DNAStringSet(c(
     edited_genome = c(
-      prefix,
-      arms$left[starts[[1]]:ends[[1]]],
-      arm_primers[[3]],
-      arms$right[starts[[2]]:ends[[2]]],
-      suffix
+      input$genome[1:arms$ticks[[2]]],
+      DNAString(if (feature$strand == "-") bridge_rc else bridge),
+      input$genome[arms$ticks[[3]]:length(input$genome)]
     )
   ))
   writeXStringSet(edited_genome, file.path(target_dir, "edited_genome.fasta"))
@@ -4245,6 +4296,7 @@ write_design_outputs <- function(
     ),
     file.path(target_dir, "report.tsv")
   )
+  completed <- TRUE
   list(
     all_primers_path = file.path(target_dir, "all_primers.fasta"),
     plain_path = plain_path,
@@ -4383,6 +4435,7 @@ design_from_grna_pool <- function(
         error = function(e) list(ok = FALSE, error = e)
       )
       if (!output_attempt$ok) {
+        if (inherits(output_attempt$error, "primer3_error")) stop(output_attempt$error)
         last_failure_stage <<- if (grepl(
           "primer QC|openPrimeR|constraint|specificity",
           conditionMessage(output_attempt$error),
@@ -4524,7 +4577,8 @@ design_target <- function(input, genome_name, gene_name, design_class) {
           file.path(target_dir, "n20_table.tsv"),
           feature,
           design_class,
-          input$parameters$n20_offtarget
+          input$parameters$n20_offtarget,
+          input$genome
         )
       )
       grnas <- run_design_stage(

@@ -33,7 +33,7 @@ fail() {
 
 cat > "$PLASMID" <<'EOF'
 >synthetic_test_target_plasmid
-ACGTACGATCGATGACTAGTACGATCGTACGATCGATGCTAGCTACGATCGTACGATCTGCAGTAGCTACGATCGT
+GGGACTAGTGTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCTCCCCGGCACCGAGTCGGTGCTTTTTTTAGCGTCAACTCTGCAGAAAA
 EOF
 
 cat > "$CAS_PLASMID" <<'EOF'
@@ -45,6 +45,7 @@ rm -rf "$OUTPUT_DIR"
 cd "$PROJECT_DIR" || fail "cannot enter project directory"
 
 Rscript test/test_unit.R || fail "unit tests failed"
+Rscript test/test_regressions.R || fail "regression tests failed"
 Rscript test/test_screening_fixture.R || fail "screening fixture failed"
 
 if ! Rscript oligo_designer.R \

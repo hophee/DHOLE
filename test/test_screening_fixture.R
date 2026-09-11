@@ -8,7 +8,7 @@ assert_true <- function(value, message) {
   }
 }
 
-local({
+test_screening_fixture <- function(strand, retry = FALSE) {
   target_dir <- tempfile("2pac-screening-fixture-")
   dir.create(target_dir)
   on.exit(unlink(target_dir, recursive = TRUE), add = TRUE)
@@ -50,7 +50,7 @@ local({
     "evaluate_candidate_reaction",
     function(input, primer_row, full_forward, full_reverse, reaction, pair_id,
              trace) {
-      passed <- identical(pair_id, "screening_02")
+      passed <- endsWith(pair_id, "_screening_02")
       specificity <- list(
         passed = passed,
         binding_sites = data.frame(
@@ -205,6 +205,14 @@ local({
     ),
     tools = list(primer3 = "unused", primer3_config = "unused")
   )
+  if (strand == "-") {
+    pair <- pair[2:1, , drop = FALSE]
+    forward <- pair$PRIMER_LEFT_SEQUENCE
+    pair$PRIMER_LEFT_SEQUENCE <- pair$PRIMER_RIGHT_SEQUENCE
+    pair$PRIMER_RIGHT_SEQUENCE <- forward
+    left_template <- reverse_complement_string(right_template)
+    right_template <- reverse_complement_string(substr(genome_sequence, 201L, 500L))
+  }
   arms <- list(
     pair = pair,
     ticks = c(201L, 500L, 701L, 1100L),
@@ -223,10 +231,31 @@ local({
   feature <- list(
     display_name = "fixture",
     query_name = "fixture",
-    strand = "+"
+    strand = strand
   )
   log_path <- file.path(target_dir, "design.log")
 
+  if (retry) {
+    original_plasmid <- input$target_plasmid_sequence
+    input$target_plasmid_sequence <- DNAString("ACTAGTCCCCCTGCAGGGG")
+    failed <- tryCatch(
+      write_design_outputs(input, feature, selected, arms, "cds", target_dir, log_path),
+      error = identity
+    )
+    assert_true(inherits(failed, "error") && grepl("sgRNA PCR", conditionMessage(failed)),
+                "The first attempt must fail after screening QC")
+    assert_true(!any(bind_rows(trace$ranking)$selected),
+                "A rejected output attempt still marks its pairs as final")
+    input$target_plasmid_sequence <- original_plasmid
+    # The next homology search supplies its selected row, retaining prior trace.
+    next_homology <- trace$ranking[[1]]
+    next_homology$pair_id <- "homology_retry"
+    next_homology$selected <- TRUE
+    trace$ranking[[length(trace$ranking) + 1L]] <- next_homology
+    arms$selected_pair_id <- "homology_retry"
+  }
+  output_id <- paste0(arms$selected_pair_id, "_outputs_", ifelse(retry, 2L, 1L))
+  expected_pair_id <- paste0(output_id, "_screening_02")
   result <- write_design_outputs(
     input,
     feature,
@@ -254,8 +283,45 @@ local({
     result$wet_lab$pcr_products
   )
 
+  # Independently specified deletion: 501..700. Keep the current CDS bridge
+  # (13 nt); its frame rule is a separate issue from genome assembly.
+  genomic_bridge <- if (strand == "+") "ATGACTGCCCGCA" else "TGCGGGCAGTCAT"
+  expected_genome <- paste0(
+    substr(genome_sequence, 1L, 500L),
+    genomic_bridge,
+    substr(genome_sequence, 701L, 2000L)
+  )
+  for (output_dir in c(target_dir, wet_lab_dir)) {
+    edited <- readDNAStringSet(file.path(output_dir, "edited_genome.fasta"))
+    assert_true(
+      identical(names(edited), "edited_genome") &&
+        identical(unname(as.character(edited)), expected_genome) &&
+        width(edited)[[1]] == 1813L,
+      sprintf("Edited genome (%s) must preserve all bases outside 501..700", strand)
+    )
+  }
   assert_true(
-    identical(result$screening_pair_id, "screening_02"),
+    identical(unname(as.integer(result$wet_lab$screening_product_sizes)),
+              c(1241L, 1054L)),
+    "Screening sizes must reflect only the 200-nt deletion and 13-nt insertion"
+  )
+  expected_screening <- substr(expected_genome, 10L, 1063L)
+  assert_true(
+    identical(result$wet_lab$pcr_products$sequence[
+      result$wet_lab$pcr_products$name == "screening_edited_genome"
+    ], expected_screening),
+    "Edited screening PCR differs from the independently specified allele"
+  )
+  donor <- paste0(left_template, "ATGACTGCCCGCA", right_template)
+  genomic_donor <- if (strand == "+") donor else reverse_complement_string(donor)
+  assert_true(
+    identical(substr(expected_genome, 201L, 913L), genomic_donor) &&
+      all(grepl(donor, as.character(result$wet_lab$edited_ptargets), fixed = TRUE)),
+    "Edited allele and pTarget must contain the same complete donor junction"
+  )
+
+  assert_true(
+    identical(result$screening_pair_id, expected_pair_id),
     "The second screening pair was not selected"
   )
   screening <- as.character(readDNAStringSet(result$screening_path))
@@ -270,7 +336,7 @@ local({
     file.path(target_dir, "primer_pair_ranking.tsv"),
     check.names = FALSE
   )
-  screening_ranking <- ranking[ranking$reaction == "scrF_scrR", , drop = FALSE]
+  screening_ranking <- ranking[ranking$reaction == "scrF_scrR" & startsWith(ranking$pair_id, output_id), , drop = FALSE]
   assert_true(
     nrow(screening_ranking) == 2L &&
       !screening_ranking$selected[[1]] &&
@@ -283,7 +349,7 @@ local({
   )
   assert_true(
     any(
-      amplicons$pair_id == "screening_02" &
+      amplicons$pair_id == expected_pair_id &
         amplicons$reaction == "scrF_scrR" &
         amplicons$intended &
         !amplicons$off_target
@@ -292,19 +358,26 @@ local({
   )
   log_lines <- readLines(log_path)
   assert_true(
-    any(grepl("primer_qc\\tTRY\\tpair_id=screening_01", log_lines)) &&
-      any(grepl("primer_qc\\tREJECTED\\tpair_id=screening_01", log_lines)) &&
-      any(grepl("primer_qc\\tOK\\tpair_id=screening_02", log_lines)),
+    any(grepl(paste0("primer_qc\\tTRY\\tpair_id=", output_id, "_screening_01"), log_lines)) &&
+      any(grepl(paste0("primer_qc\\tREJECTED\\tpair_id=", output_id, "_screening_01"), log_lines)) &&
+      any(grepl(paste0("primer_qc\\tOK\\tpair_id=", expected_pair_id), log_lines)),
     "Screening TRY/REJECTED/OK events are incomplete"
   )
   report <- readLines(file.path(target_dir, "report.tsv"))
   assert_true(
-    any(report == "screening_pair_id\tscreening_02"),
+    any(report == paste0("screening_pair_id\t", expected_pair_id)),
     "report.tsv lacks the selected screening pair ID"
   )
   assert_true(
-    result$wet_lab$n20_distances$left_arm_distance_bp[[1]] == 59L &&
-      result$wet_lab$n20_distances$right_arm_distance_bp[[1]] == 121L,
+    all(c("screening_unsuccessful_insertion_bp\t1241",
+          "screening_successful_insertion_bp\t1054") %in% report),
+    "TechReport must contain the independently expected screening sizes"
+  )
+  assert_true(
+    result$wet_lab$n20_distances$left_arm_distance_bp[[1]] ==
+      ifelse(strand == "+", 59L, 121L) &&
+      result$wet_lab$n20_distances$right_arm_distance_bp[[1]] ==
+        ifelse(strand == "+", 121L, 59L),
     "WetLab data lacks the selected N20-to-arm distances"
   )
   assert_true(
@@ -356,12 +429,23 @@ local({
     encoding = "UTF-8"
   )
   assert_true(
-    any(grepl("N20_1.*59.*121", wet_lab_report)) &&
+    all(c("Без успешного нокаута (исходный аллель), п.н.\t1241",
+          "С успешным нокаутом (редактированный аллель), п.н.\t1054") %in%
+        wet_lab_report),
+    "WetLab report must contain the independently expected screening sizes"
+  )
+  assert_true(
+    any(grepl(ifelse(strand == "+", "N20_1.*59.*121", "N20_1.*121.*59"),
+              wet_lab_report)) &&
       any(grepl("Оффтаргетные ПЦР-продукты, всего.*0", wet_lab_report)) &&
       any(grepl("Все обязательные ограничения пройдены.*пройдено", wet_lab_report)) &&
       any(grepl("DECIPHER::AmplifyDNA", wet_lab_report, fixed = TRUE)),
     "Selected screening QC was not written to the WetLab report"
   )
-})
+}
+
+test_screening_fixture("+")
+test_screening_fixture("-")
+test_screening_fixture("+", retry = TRUE)
 
 message("Screening integration fixture passed")

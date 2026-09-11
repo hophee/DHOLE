@@ -11,7 +11,6 @@ readonly CHOPCHOP_ENV_NAME="oligo_design_chopchop"
 readonly VIENNARNA_ENV_FILE="$PROJECT_DIR/env_viennarna.yml"
 readonly VIENNARNA_ENV_NAME="oligo_design_viennarna"
 
-readonly CALL_PRIMER3_URL="https://gist.githubusercontent.com/IdoBar/5e78ae7a5cc7277a04b126ce6f595d6e/raw/45c60662f3479f41765bce839835c4988a7e5b36/callPrimer3.R"
 
 readonly TEST_DIR="$PROJECT_DIR/test"
 readonly MELTING_WRAPPER="$PROJECT_DIR/tools/melting-batch"
@@ -182,7 +181,7 @@ install_r_dependencies() {
   local temporary_script
 
   temporary_script="$(
-    mktemp "$PROJECT_DIR/.install-r-dependencies.XXXXXX.R"
+    mktemp "${TMPDIR:-/tmp}/install-r-dependencies.XXXXXX.R"
   )" || return 1
 
   cat > "$temporary_script" <<'RSCRIPT'
@@ -392,28 +391,11 @@ verify_primer_qc_dependencies() {
 }
 
 
-download_call_primer3() {
-  local temporary_file
-
-  temporary_file="$(
-    mktemp "$PROJECT_DIR/.callPrimer3.R.XXXXXX"
-  )" || return 1
-
-  if ! curl \
-    --fail \
-    --location \
-    --silent \
-    --show-error \
-    "$CALL_PRIMER3_URL" \
-    --output "$temporary_file"; then
-
-    rm -f "$temporary_file"
+validate_call_primer3() {
+  [[ -s "$PROJECT_DIR/callPrimer3.R" ]] || {
+    printf 'ERROR: tracked callPrimer3.R is missing; restore it from the project source.\n' >&2
     return 1
-  fi
-
-  mv \
-    "$temporary_file" \
-    "$PROJECT_DIR/callPrimer3.R"
+  }
 }
 
 
@@ -619,7 +601,7 @@ run_step \
 #
 run_step \
   "callPrimer3.R" \
-  download_call_primer3
+  validate_call_primer3
 
 
 #
