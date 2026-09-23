@@ -22,11 +22,16 @@ readonly SUMMARY="$TECH_REPORT_DIR/design_summary.tsv"
 readonly PLASMID="$TEST_DIR/test_target_plasmid.fasta"
 readonly CAS_PLASMID="$TEST_DIR/test_cas_plasmid.fasta"
 readonly TEST_GENES="recA,pta,hupB"
+readonly TEST_LOG="$OUTPUT_DIR/test.log"
 
 fail() {
   printf 'TEST FAILED: %s\n' "$1" >&2
   exit 1
 }
+
+rm -rf "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR"
+exec > >(tee "$TEST_LOG") 2>&1
 
 [[ -s "$TEST_DIR/MG1655.fna" ]] || fail "MG1655.fna is missing or empty"
 [[ -s "$TEST_DIR/MG1655.gff" ]] || fail "MG1655.gff is missing or empty"
@@ -41,7 +46,6 @@ cat > "$CAS_PLASMID" <<'EOF'
 TTGCAAGCTTAGGCTAACGTTGCAAGCTTAGGCTAACGTTGCAAGCTTAGGCTAACGTTGCAAGCTTAGGCTAACGT
 EOF
 
-rm -rf "$OUTPUT_DIR"
 cd "$PROJECT_DIR" || fail "cannot enter project directory"
 
 Rscript test/test_unit.R || fail "unit tests failed"
