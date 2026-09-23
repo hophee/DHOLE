@@ -675,6 +675,13 @@ parse_designer_args <- function(args) {
   )
   parser <- add_argument(
     parser,
+    "--filtering-level",
+    help = "Primer QC: 1=lite/report, 2=default/warn, 3=hard/core",
+    default = 2L,
+    type = "integer"
+  )
+  parser <- add_argument(
+    parser,
     "--n20-mn",
     help = "Minimum number of N20 sequences",
     default = 1L,
@@ -885,6 +892,14 @@ parse_designer_args <- function(args) {
     )
   }
   n20_strands <- unname(strand_aliases[[n20_strands]])
+  filtering_level <- as.integer(parsed$filtering_level)
+  if (
+    length(filtering_level) != 1L ||
+      is.na(filtering_level) ||
+      !filtering_level %in% 1:3
+  ) {
+    stop("--filtering-level должен быть равен 1, 2 или 3", call. = FALSE)
+  }
   left_arm <- validate_arm_lengths(
     "левого",
     parsed$left_arm_min,
@@ -942,6 +957,7 @@ parse_designer_args <- function(args) {
     chopchop_script = normalize_scalar(parsed$chopchop_script),
     chopchop_python = normalize_scalar(parsed$chopchop_python),
     primer3 = normalize_scalar(parsed$primer3),
+    filtering_level = filtering_level,
     n20_mn = n20_mn,
     n20_strands = n20_strands,
     n20_offtarget = parse_offtarget_thresholds(parsed$n20_offtarget),
@@ -1008,6 +1024,7 @@ primer_qc_defaults <- function() {
     max_allowed_offtarget_products = 0L,
     expected_coordinate_tolerance = 0L,
     expected_size_tolerance = 0L,
+    hard_max_tm_diff = 5,
     primer_efficiency_min = 0.001,
     openprimer_profile = "C_Taq_PCR_high_stringency.xml",
     openprimer_critical_annealing = c(
@@ -1026,6 +1043,15 @@ primer_qc_defaults <- function() {
     ),
     openprimer_soft_constraints = character()
   )
+}
+
+filtering_level_name <- function(level) {
+  names <- c("lite", "default", "hard")
+  level <- as.integer(level)
+  if (length(level) != 1L || is.na(level) || !level %in% seq_along(names)) {
+    stop("filtering_level должен быть равен 1, 2 или 3", call. = FALSE)
+  }
+  names[[level]]
 }
 
 make_specificity_references <- function(
@@ -1939,13 +1965,110 @@ evaluate_openprimer_pair <- function(
   )
 }
 
+unavailable_openprimer_result <- function(
+  reaction,
+  reason,
+  abs_tm_diff = Inf,
+  tm_source = "unavailable"
+) {
+  reason <- if (inherits(reason, "condition")) conditionMessage(reason) else {
+    as.character(reason)
+  }
+  reason <- gsub("[\r\n\t]+", " ", reason)
+  list(
+    passed = FALSE,
+    rejection_reason = paste0("openprimer_unavailable:", reason),
+    metrics = data.frame(
+      reaction = reaction,
+      constraints_passed = FALSE,
+      penalty = Inf,
+      melting_temp_diff = abs_tm_diff,
+      tm_source = tm_source,
+      unavailable_constraints = reason,
+      stringsAsFactors = FALSE
+    ),
+    penalty = Inf,
+    failed_soft_constraints = 0L,
+    max_dimer_risk = Inf,
+    abs_tm_diff = abs_tm_diff,
+    unavailable_constraints = reason,
+    skipped_constraints = character()
+  )
+}
+
+evaluate_filtering_policy <- function(
+  specificity,
+  openprimer,
+  filtering_level,
+  config = primer_qc_defaults()
+) {
+  mode <- filtering_level_name(filtering_level)
+  expected_ok <- identical(as.integer(specificity$n_expected_products), 1L)
+  high_risk_ok <- specificity$n_high_risk_offtarget_products == 0L
+  tm_diff <- if (is.null(openprimer)) Inf else openprimer$abs_tm_diff
+  tm_ok <- length(tm_diff) == 1L && is.finite(tm_diff) &&
+    tm_diff <= config$hard_max_tm_diff
+  strict_passed <- isTRUE(specificity$passed) &&
+    !is.null(openprimer) && isTRUE(openprimer$passed)
+
+  blocking_reasons <- switch(
+    as.character(filtering_level),
+    `1` = character(),
+    `2` = if (!expected_ok) {
+      paste0("expected_product_count=", specificity$n_expected_products)
+    } else character(),
+    `3` = c(
+      if (!expected_ok) {
+        paste0("expected_product_count=", specificity$n_expected_products)
+      },
+      if (!high_risk_ok) {
+        paste0(
+          "high_risk_off_target_products=",
+          specificity$n_high_risk_offtarget_products
+        )
+      },
+      if (!tm_ok) {
+        if (is.finite(tm_diff)) {
+          paste0("tm_difference=", tm_diff, ">", config$hard_max_tm_diff)
+        } else "tm_difference_unavailable"
+      }
+    )
+  )
+  warnings <- unique(c(
+    if (!isTRUE(specificity$passed)) specificity$rejection_reason,
+    if (specificity$n_high_risk_offtarget_products > 0L) {
+      paste0(
+        "high_risk_off_target_products=",
+        specificity$n_high_risk_offtarget_products
+      )
+    },
+    if (specificity$n_perfect_3p_offtarget_sites > 0L) {
+      paste0(
+        "perfect_3p_off_target_sites=",
+        specificity$n_perfect_3p_offtarget_sites
+      )
+    },
+    if (is.null(openprimer)) "openprimer_not_evaluated" else if (
+      !isTRUE(openprimer$passed)
+    ) openprimer$rejection_reason
+  ))
+  warnings <- warnings[!is.na(warnings) & nzchar(warnings)]
+  list(
+    filtering_level = as.integer(filtering_level),
+    filtering_mode = mode,
+    strict_passed = strict_passed,
+    blocking_passed = !length(blocking_reasons),
+    blocking_reasons = paste(blocking_reasons, collapse = ";"),
+    warnings = paste(warnings, collapse = ";")
+  )
+}
+
 select_best_primer_pair <- function(candidates) {
   required_gates <- c(
     "structure_passed",
-    "specificity_passed",
-    "openprimer_passed"
+    "blocking_passed"
   )
-  missing_gates <- setdiff(required_gates, names(candidates))
+  missing_gates <- setdiff(c(required_gates, "strict_qc_passed"), names(candidates))
   if (length(missing_gates)) {
     stop(
       sprintf(
@@ -1956,6 +2079,7 @@ select_best_primer_pair <- function(candidates) {
     )
   }
   rank_columns <- c(
+    "n_expected_product_deviations",
     "n_high_risk_offtarget_products",
     "n_all_offtarget_products",
     "n_perfect_3p_offtarget_sites",
@@ -1974,7 +2098,11 @@ select_best_primer_pair <- function(candidates) {
     !is.na(value) & as.logical(value)
   })
   eligible <- Reduce(`&`, gate_values)
+  strict <- eligible & !is.na(candidates$strict_qc_passed) &
+    as.logical(candidates$strict_qc_passed)
+  selection_pool <- if (any(strict)) strict else eligible
   candidates$selected <- FALSE
+  candidates$fallback_selected <- FALSE
   gate_reasons <- apply(
     as.data.frame(gate_values),
     1L,
@@ -1991,10 +2119,10 @@ select_best_primer_pair <- function(candidates) {
     candidates$rejection_reason[!eligible],
     paste0("hard_gate:", gate_reasons[!eligible])
   )
-  if (!any(eligible)) {
+  if (!any(selection_pool)) {
     return(list(pair = NULL, ranking = candidates))
   }
-  eligible_indices <- which(eligible)
+  eligible_indices <- which(selection_pool)
   order_args <- lapply(
     candidates[eligible_indices, rank_columns, drop = FALSE],
     function(values) {
@@ -2005,7 +2133,10 @@ select_best_primer_pair <- function(candidates) {
   )
   selected_index <- eligible_indices[do.call(order, order_args)[[1]]]
   candidates$selected[[selected_index]] <- TRUE
-  candidates$rejection_reason[eligible & !candidates$selected] <-
+  candidates$fallback_selected[[selected_index]] <- !strict[[selected_index]]
+  candidates$rejection_reason[eligible & !selection_pool] <-
+    "strict_qc_candidate_available"
+  candidates$rejection_reason[selection_pool & !candidates$selected] <-
     "lower_deterministic_rank"
   list(
     pair = candidates[selected_index, , drop = FALSE],
@@ -2078,6 +2209,8 @@ write_run_parameters <- function(input, targets, path) {
     ),
     primer3_executable = input$tools$primer3,
     primer3_thermodynamic_parameters = input$tools$primer3_config,
+    filtering_level = input$parameters$filtering_level,
+    filtering_mode = filtering_level_name(input$parameters$filtering_level),
     n20_count = input$parameters$n20_mn,
     n20_strands = input$parameters$n20_strands,
     n20_offtarget_thresholds = paste(
@@ -2107,6 +2240,8 @@ write_run_parameters <- function(input, targets, path) {
     primer_qc_max_product_size = input$parameters$primer_qc$max_product_size,
     primer_qc_max_allowed_offtarget_products =
       input$parameters$primer_qc$max_allowed_offtarget_products,
+    primer_qc_hard_max_tm_diff =
+      input$parameters$primer_qc$hard_max_tm_diff,
     primer_qc_primer_efficiency_min =
       input$parameters$primer_qc$primer_efficiency_min,
     openprimer_profile = input$parameters$primer_qc$openprimer_profile,
@@ -2116,6 +2251,15 @@ write_run_parameters <- function(input, targets, path) {
     openprimer_required_constraints = if (is.null(loaded_openprimer)) NA else {
       paste(loaded_openprimer$required_constraints, collapse = ",")
     },
+    openprimer_load_error = if (exists(
+      ".openprimer_load_error",
+      input$primer_qc_cache,
+      inherits = FALSE
+    )) get(
+      ".openprimer_load_error",
+      input$primer_qc_cache,
+      inherits = FALSE
+    ) else NA_character_,
     openprimer_limits,
     openprimer_version = tryCatch(
       as.character(utils::packageVersion("openPrimeR")),
@@ -2190,6 +2334,7 @@ make_design_input <- function(cli) {
       primer3_config = file.path(.dhole_project_dir, "primer3/src/primer3_config")
     ),
     parameters = list(
+      filtering_level = cli$filtering_level,
       n20_mn = cli$n20_mn,
       n20_strands = cli$n20_strands,
       n20_offtarget = cli$n20_offtarget,
@@ -2767,7 +2912,9 @@ append_primer_qc_trace <- function(
     trace$openprimer[[length(trace$openprimer) + 1L]] <- metrics
   }
   if (!is.null(ranking)) {
-    ranking$selected_for_attempt <- ranking$selected
+    if (!"selected_for_attempt" %in% names(ranking)) {
+      ranking$selected_for_attempt <- ranking$selected
+    }
     trace$ranking[[length(trace$ranking) + 1L]] <- ranking
   }
   invisible(trace)
@@ -2935,6 +3082,13 @@ cached_openprimer_pair <- function(
   config <- input$parameters$primer_qc
   settings_key <- ".openprimer_settings"
   if (!exists(settings_key, input$primer_qc_cache, inherits = FALSE)) {
+    if (exists(".openprimer_load_error", input$primer_qc_cache, inherits = FALSE)) {
+      stop(get(
+        ".openprimer_load_error",
+        input$primer_qc_cache,
+        inherits = FALSE
+      ), call. = FALSE)
+    }
     loaded <- tryCatch(
       load_openprimer_settings(config, input$parameters$primer3_buffer),
       error = function(e) {
@@ -3062,35 +3216,59 @@ evaluate_candidate_reaction <- function(
     pair_id,
     specificity = specificity
   )
-  if (!specificity$passed) {
-    return(list(
-      passed = FALSE,
-      specificity = specificity,
-      openprimer = NULL,
-      rejection_reason = specificity$rejection_reason
-    ))
-  }
   intended <- specificity$amplicons[specificity$amplicons$intended, , drop = FALSE]
-  openprimer <- cached_openprimer_pair(
-    input,
-    forward,
-    reverse,
-    full_forward,
-    full_reverse,
-    intended$sequence[[1]],
-    reaction
-  )
+  primer_tm <- suppressWarnings(as.numeric(c(
+    primer_row$PRIMER_LEFT_TM[[1]],
+    primer_row$PRIMER_RIGHT_TM[[1]]
+  )))
+  primer3_tm_diff <- if (length(primer_tm) == 2L && all(is.finite(primer_tm))) {
+    abs(diff(primer_tm))
+  } else Inf
+  openprimer <- if (nrow(intended) == 1L && !is.na(intended$sequence[[1]])) {
+    tryCatch(
+      cached_openprimer_pair(
+        input,
+        forward,
+        reverse,
+        full_forward,
+        full_reverse,
+        intended$sequence[[1]],
+        reaction
+      ),
+      error = function(e) unavailable_openprimer_result(
+        reaction,
+        e,
+        primer3_tm_diff,
+        "Primer3 fallback"
+      )
+    )
+  } else {
+    unavailable_openprimer_result(
+      reaction,
+      "expected product is unavailable or ambiguous",
+      primer3_tm_diff,
+      "Primer3 fallback"
+    )
+  }
   append_primer_qc_trace(
     trace,
     reaction,
     pair_id,
     openprimer = openprimer
   )
+  policy <- evaluate_filtering_policy(
+    specificity,
+    openprimer,
+    input$parameters$filtering_level,
+    input$parameters$primer_qc
+  )
   list(
-    passed = openprimer$passed,
+    passed = policy$blocking_passed,
     specificity = specificity,
     openprimer = openprimer,
-    rejection_reason = openprimer$rejection_reason
+    policy = policy,
+    rejection_reason = policy$blocking_reasons,
+    risk_warnings = policy$warnings
   )
 }
 
@@ -3126,6 +3304,7 @@ design_homology_arms <- function(
   }
 
   attempt <- 0L
+  deferred_fallbacks <- list()
   repeat {
     attempt <- attempt + 1L
     left_length <- min(
@@ -3363,6 +3542,21 @@ design_homology_arms <- function(
               if (!is.null(right_result)) right_result$openprimer else NULL
             )
           )
+          policy_results <- Filter(
+            Negate(is.null),
+            list(
+              if (!is.null(left_result)) left_result$policy else NULL,
+              if (!is.null(right_result)) right_result$policy else NULL
+            )
+          )
+          risk_warnings <- paste(c(
+            if (!is.null(left_result) && nzchar(left_result$risk_warnings)) {
+              paste0("LF_LR:", left_result$risk_warnings)
+            },
+            if (!is.null(right_result) && nzchar(right_result$risk_warnings)) {
+              paste0("RF_RR:", right_result$risk_warnings)
+            }
+          ), collapse = ";")
           primer3_penalties <- suppressWarnings(as.numeric(c(
             if ("PRIMER_PAIR_PENALTY" %in% names(left_row)) {
               left_row$PRIMER_PAIR_PENALTY[[1]]
@@ -3379,11 +3573,25 @@ design_homology_arms <- function(
             right_primer3_index = combination$right_index[[1]],
             left_pair_id = left_pair_id,
             right_pair_id = right_pair_id,
+            filtering_level = input$parameters$filtering_level,
+            filtering_mode = filtering_level_name(
+              input$parameters$filtering_level
+            ),
             structure_passed = structure_passed,
             specificity_passed = length(specificity_results) == 2L &&
               all(vapply(specificity_results, `[[`, logical(1), "passed")),
             openprimer_passed = length(openprimer_results) == 2L &&
               all(vapply(openprimer_results, `[[`, logical(1), "passed")),
+            strict_qc_passed = length(policy_results) == 2L &&
+              all(vapply(policy_results, `[[`, logical(1), "strict_passed")),
+            blocking_passed = length(policy_results) == 2L &&
+              all(vapply(policy_results, `[[`, logical(1), "blocking_passed")),
+            n_expected_product_deviations = sum(abs(vapply(
+              specificity_results,
+              `[[`,
+              numeric(1),
+              "n_expected_products"
+            ) - 1L)),
             n_high_risk_offtarget_products = sum(vapply(
               specificity_results,
               `[[`,
@@ -3432,6 +3640,7 @@ design_homology_arms <- function(
             } else Inf,
             primer3_pair_penalty = sum(primer3_penalties),
             deleted_nt = combination$deleted_nt[[1]],
+            risk_warnings = risk_warnings,
             rejection_reason = rejection_reason,
             stringsAsFactors = FALSE
           )
@@ -3439,23 +3648,40 @@ design_homology_arms <- function(
       }
       if (length(ranking_rows)) {
         selection <- select_best_primer_pair(bind_rows(ranking_rows))
+        deferred <- !is.null(selection$pair) &&
+          isTRUE(selection$pair$fallback_selected[[1]])
+        trace_ranking <- selection$ranking
+        if (deferred) {
+          trace_ranking$selected_for_attempt <- trace_ranking$selected
+          provisional <- trace_ranking$selected
+          trace_ranking$selected[provisional] <- FALSE
+          trace_ranking$rejection_reason[provisional] <-
+            "deferred_fallback_candidate"
+        }
         append_primer_qc_trace(
           trace,
           "homology_arms",
           paste0("n20_", n20_attempt, "_attempt_", attempt),
-          ranking = selection$ranking
+          ranking = trace_ranking
         )
+        trace_index <- length(trace$ranking)
         if (!is.null(log_path)) {
           for (i in seq_len(nrow(selection$ranking))) {
             candidate <- selection$ranking[i, , drop = FALSE]
+            status <- if (candidate$selected[[1]] && deferred) {
+              "DEFERRED"
+            } else if (candidate$selected[[1]]) "OK" else "REJECTED"
             append_design_log(
               log_path,
               "primer_qc",
-              if (candidate$selected[[1]]) "OK" else "REJECTED",
+              status,
               sprintf(
                 "pair_id=%s;reason=%s",
                 candidate$pair_id[[1]],
-                candidate$rejection_reason[[1]]
+                if (candidate$selected[[1]] &&
+                    isTRUE(candidate$fallback_selected[[1]])) {
+                  candidate$risk_warnings[[1]]
+                } else candidate$rejection_reason[[1]]
               )
             )
           }
@@ -3475,11 +3701,8 @@ design_homology_arms <- function(
             ]
           )
           ticks <- sort(unlist(pair[, c("genome_start", "genome_end")]))
-          write_tsv(
-            bind_rows(positions$left, positions$right),
-            file.path(target_dir, "primer3_table.tsv")
-          )
-          return(list(
+          position_table <- bind_rows(positions$left, positions$right)
+          design <- list(
             pair = pair,
             left = left_seq,
             right = right_seq,
@@ -3487,7 +3710,27 @@ design_homology_arms <- function(
             ticks = ticks,
             selected_pair_id = selected_rank$pair_id[[1]],
             primer_qc_trace = trace
-          ))
+          )
+          if (!deferred) {
+            write_tsv(
+              position_table,
+              file.path(target_dir, "primer3_table.tsv")
+            )
+            return(design)
+          }
+          design$ranking <- selected_rank
+          design$positions <- position_table
+          design$primer3_reports <- lapply(
+            c("left_arm_report.txt", "right_arm_report.txt"),
+            function(report_name) {
+              report_path <- file.path(target_dir, report_name)
+              if (file.exists(report_path)) readLines(report_path, warn = FALSE) else {
+                character()
+              }
+            }
+          )
+          design$trace_index <- trace_index
+          deferred_fallbacks[[length(deferred_fallbacks) + 1L]] <- design
         }
       }
     }
@@ -3501,6 +3744,59 @@ design_homology_arms <- function(
     ) {
       break
     }
+  }
+  if (length(deferred_fallbacks)) {
+    fallback_ranking <- bind_rows(lapply(
+      deferred_fallbacks,
+      `[[`,
+      "ranking"
+    ))
+    final_selection <- select_best_primer_pair(fallback_ranking)$pair
+    selected_id <- final_selection$pair_id[[1]]
+    fallback_index <- which(vapply(
+      deferred_fallbacks,
+      function(candidate) identical(candidate$selected_pair_id, selected_id),
+      logical(1)
+    ))[[1]]
+    design <- deferred_fallbacks[[fallback_index]]
+    trace_ranking <- trace$ranking[[design$trace_index]]
+    selected_row <- trace_ranking$pair_id == selected_id
+    trace_ranking$selected[selected_row] <- TRUE
+    trace_ranking$rejection_reason[selected_row] <- ""
+    trace$ranking[[design$trace_index]] <- trace_ranking
+    if (!is.null(log_path)) {
+      append_design_log(
+        log_path,
+        "primer_qc",
+        "OK",
+        sprintf(
+          "pair_id=%s;reason=%s",
+          selected_id,
+          design$ranking$risk_warnings[[1]]
+        )
+      )
+    }
+    write_tsv(design$positions, file.path(target_dir, "primer3_table.tsv"))
+    writeXStringSet(
+      DNAStringSet(c(left_arm = design$left, right_arm = design$right)),
+      file.path(target_dir, "homology_arms_before_primer_search.fasta")
+    )
+    for (i in seq_along(design$primer3_reports)) {
+      if (length(design$primer3_reports[[i]])) {
+        writeLines(
+          design$primer3_reports[[i]],
+          file.path(
+            target_dir,
+            c("left_arm_report.txt", "right_arm_report.txt")[[i]]
+          )
+        )
+      }
+    }
+    design$ranking <- NULL
+    design$positions <- NULL
+    design$primer3_reports <- NULL
+    design$trace_index <- NULL
+    return(design)
   }
   NULL
 }
@@ -3592,6 +3888,7 @@ format_openprimer_report_metrics <- function(metrics) {
     Tm_C_fw = "Tm forward по openPrimeR, °C",
     Tm_C_rev = "Tm reverse по openPrimeR, °C",
     melting_temp_diff = "Разница Tm пары, °C",
+    tm_source = "Источник разницы Tm",
     Basic_primer_coverage = "Число покрытых целевых шаблонов",
     Basic_Coverage_Ratio = "Доля покрытых целевых шаблонов, %",
     primer_specificity = "Специфичность праймеров, %",
@@ -3603,6 +3900,7 @@ format_openprimer_report_metrics <- function(metrics) {
     Structure_deltaG_rev = "Вторичная структура reverse ΔG, ккал/моль",
     Structure_deltaG = "Худшая вторичная структура ΔG, ккал/моль",
     penalty = "Суммарный штраф openPrimeR",
+    unavailable_constraints = "Недоступные проверки openPrimeR",
     EVAL_primer_length = "Проверка длины праймеров",
     EVAL_gc_ratio = "Проверка GC-состава",
     EVAL_gc_clamp = "Проверка GC-clamp",
@@ -3671,8 +3969,10 @@ write_wet_lab_outputs <- function(
     "left_arm_distance_bp", "right_arm_distance_bp"
   )
   required_screening_qc <- c(
-    "pair_id", "offtarget_products", "high_risk_offtarget_products",
-    "perfect_3p_offtarget_sites", "openprimer_metrics"
+    "pair_id", "filtering_level", "filtering_mode", "selection_status",
+    "fallback_used", "warnings", "offtarget_products",
+    "high_risk_offtarget_products", "perfect_3p_offtarget_sites",
+    "openprimer_metrics"
   )
   required_site_pair <- c(
     "orientation", "site1_start", "site2_start"
@@ -3799,6 +4099,18 @@ write_wet_lab_outputs <- function(
     "2PAC: отчёт для мокрой лаборатории",
     paste("Цель", feature$query_name, sep = "\t"),
     paste("Класс", design_class, sep = "\t"),
+    paste(
+      "Режим фильтрации праймеров",
+      sprintf(
+        "%d (%s)",
+        screening_qc$filtering_level,
+        screening_qc$filtering_mode
+      ),
+      sep = "\t"
+    ),
+    paste("Статус primer QC", screening_qc$selection_status, sep = "\t"),
+    paste("QC fallback", screening_qc$fallback_used, sep = "\t"),
+    paste("Предупреждения primer QC", screening_qc$warnings, sep = "\t"),
     "",
     "Итоговый набор последовательностей",
     paste(names(sequence_table), collapse = "\t"),
@@ -4009,9 +4321,16 @@ write_design_outputs <- function(
       pair_id = pair_id,
       reaction = "scrF_scrR",
       primer3_index = screening_index,
+      filtering_level = input$parameters$filtering_level,
+      filtering_mode = filtering_level_name(input$parameters$filtering_level),
       structure_passed = TRUE,
       specificity_passed = specificity$passed,
       openprimer_passed = !is.null(openprimer) && openprimer$passed,
+      strict_qc_passed = result$policy$strict_passed,
+      blocking_passed = result$policy$blocking_passed,
+      n_expected_product_deviations = abs(
+        specificity$n_expected_products - 1L
+      ),
       n_high_risk_offtarget_products =
         specificity$n_high_risk_offtarget_products,
       n_all_offtarget_products = specificity$n_all_offtarget_products,
@@ -4027,6 +4346,9 @@ write_design_outputs <- function(
       abs_tm_diff = if (is.null(openprimer)) Inf else openprimer$abs_tm_diff,
       primer3_pair_penalty = primer3_penalty,
       deleted_nt = gap,
+      risk_warnings = if (nzchar(result$risk_warnings)) {
+        paste0("scrF_scrR:", result$risk_warnings)
+      } else "",
       rejection_reason = result$rejection_reason,
       stringsAsFactors = FALSE
     )
@@ -4048,7 +4370,10 @@ write_design_outputs <- function(
         sprintf(
           "pair_id=%s;reason=%s",
           candidate$pair_id[[1]],
-          candidate$rejection_reason[[1]]
+          if (candidate$selected[[1]] &&
+              isTRUE(candidate$fallback_selected[[1]])) {
+            candidate$risk_warnings[[1]]
+          } else candidate$rejection_reason[[1]]
         )
       )
     }
@@ -4177,8 +4502,47 @@ write_design_outputs <- function(
     ,
     drop = FALSE
   ]
-  if (nrow(screening_rank) != 1L || nrow(selected_openprimer) != 1L) {
+  if (
+    nrow(homology_rank) != 1L ||
+      nrow(screening_rank) != 1L ||
+      nrow(selected_openprimer) != 1L
+  ) {
     stop("Не удалось собрать QC выбранной screening-пары", call. = FALSE)
+  }
+  qc_warnings <- unique(trimws(c(
+    homology_rank$risk_warnings[[1]],
+    screening_rank$risk_warnings[[1]]
+  )))
+  qc_warnings <- qc_warnings[nzchar(qc_warnings)]
+  fallback_used <- any(c(
+    homology_rank$fallback_selected[[1]],
+    screening_rank$fallback_selected[[1]]
+  ))
+  warning_text <- if (length(qc_warnings)) {
+    paste(qc_warnings, collapse = "; ")
+  } else "none"
+  has_qc_warnings <- length(qc_warnings) > 0L
+  qc_status <- if (has_qc_warnings) "selected_with_warnings" else "strict_pass"
+  if (has_qc_warnings) {
+    detail <- sprintf(
+      "filtering_level=%d;target=%s;warnings=%s",
+      input$parameters$filtering_level,
+      feature$query_name,
+      warning_text
+    )
+    if (!is.null(log_path)) {
+      append_design_log(log_path, "primer_qc", "WARNING", detail)
+    }
+    warning(
+      sprintf(
+        "[%s] Выбраны праймеры с QC-рисками (%s): %s",
+        feature$query_name,
+        filtering_level_name(input$parameters$filtering_level),
+        warning_text
+      ),
+      call. = FALSE,
+      immediate. = TRUE
+    )
   }
   n20_distances <- calculate_n20_arm_distances(
     selected$table,
@@ -4187,6 +4551,11 @@ write_design_outputs <- function(
   )
   screening_qc <- list(
     pair_id = selected_screening_pair_id,
+    filtering_level = input$parameters$filtering_level,
+    filtering_mode = filtering_level_name(input$parameters$filtering_level),
+    selection_status = qc_status,
+    fallback_used = fallback_used,
+    warnings = warning_text,
     offtarget_products = screening_rank$n_all_offtarget_products[[1]],
     high_risk_offtarget_products =
       screening_rank$n_high_risk_offtarget_products[[1]],
@@ -4199,6 +4568,15 @@ write_design_outputs <- function(
     c(
       paste("target", feature$query_name, sep = "\t"),
       paste("class", design_class, sep = "\t"),
+      paste("filtering_level", input$parameters$filtering_level, sep = "\t"),
+      paste(
+        "filtering_mode",
+        filtering_level_name(input$parameters$filtering_level),
+        sep = "\t"
+      ),
+      paste("primer_qc_selection_status", qc_status, sep = "\t"),
+      paste("primer_qc_fallback_used", fallback_used, sep = "\t"),
+      paste("primer_qc_warnings", warning_text, sep = "\t"),
       paste("n20_count", nrow(selected$table), sep = "\t"),
       paste("ptarget_site1", input$parameters$site1, sep = "\t"),
       paste("ptarget_site2", input$parameters$site2, sep = "\t"),
@@ -4671,14 +5049,32 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
   cli <- parse_designer_args(args)
   configure_openprimer_environment()
   input <- make_design_input(cli)
-  assign(
-    ".openprimer_settings",
+  message(sprintf(
+    "[QC] filtering_level=%d (%s)",
+    input$parameters$filtering_level,
+    filtering_level_name(input$parameters$filtering_level)
+  ))
+  loaded_openprimer <- tryCatch(
     load_openprimer_settings(
       input$parameters$primer_qc,
       input$parameters$primer3_buffer
     ),
-    input$primer_qc_cache
+    error = identity
   )
+  if (inherits(loaded_openprimer, "error")) {
+    assign(
+      ".openprimer_load_error",
+      conditionMessage(loaded_openprimer),
+      input$primer_qc_cache
+    )
+    warning(
+      sprintf("openPrimeR QC недоступен: %s", conditionMessage(loaded_openprimer)),
+      call. = FALSE,
+      immediate. = TRUE
+    )
+  } else {
+    assign(".openprimer_settings", loaded_openprimer, input$primer_qc_cache)
+  }
   dir.create(input$output_dir, recursive = TRUE, showWarnings = FALSE)
   layout <- output_layout(input$output_dir)
   dir.create(layout$wet_lab, recursive = TRUE, showWarnings = FALSE)

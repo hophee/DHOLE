@@ -88,11 +88,14 @@ grep -q $'^primer3_buffer_divalent_salt_mm\t1.5$' "$TECH_REPORT_DIR/run_paramete
   fail "run_parameters.tsv lacks Primer3 buffer data"
 grep -q $'^primer_qc_critical_3p_bases\t5$' "$TECH_REPORT_DIR/run_parameters.tsv" ||
   fail "run_parameters.tsv lacks primer QC defaults"
+grep -q $'^filtering_level\t2$' "$TECH_REPORT_DIR/run_parameters.tsv" ||
+  fail "run_parameters.tsv lacks the default filtering level"
 grep -q $'^openprimer_active_constraints\t' "$TECH_REPORT_DIR/run_parameters.tsv" ||
   fail "run_parameters.tsv lacks active openPrimeR constraints"
 grep -q $'^cas_plasmid_file\t' "$TECH_REPORT_DIR/run_parameters.tsv" ||
   fail "run_parameters.tsv lacks the pCas input path"
 
+success_count=0
 for gene in recA pta hupB; do
   target_dir="$TECH_REPORT_DIR/${gene,,}_results"
   wet_target_dir="$WET_LAB_DIR/${gene,,}_results"
@@ -104,7 +107,7 @@ for gene in recA pta hupB; do
   if [[ "$status" == "error" ]]; then
     stage="$(awk -F '\t' -v gene="$gene" 'NR > 1 && $1 == gene { print $5 }' "$SUMMARY")"
     [[ "$stage" == "primer_qc" || "$stage" == "homology_arms" ]] ||
-      fail "$gene failed outside the documented strict primer_qc gate: $stage"
+      fail "$gene failed outside the documented primer/core-QC gate: $stage"
     if [[ "$stage" == "primer_qc" ]]; then
       grep -q $'\tprimer_qc\tTRY\t' "$target_dir/design.log" ||
         fail "design.log lacks primer_qc TRY for $gene"
@@ -121,6 +124,7 @@ for gene in recA pta hupB; do
     continue
   fi
   [[ "$status" == "ok" ]] || fail "$gene has unexpected summary status: $status"
+  success_count=$((success_count + 1))
   awk -F '\t' -v gene="$gene" 'NR > 1 && $1 == gene && $7 != "" && $7 != "NA" { found = 1 } END { exit !found }' "$SUMMARY" ||
     fail "$gene has no WetLab path in design_summary.tsv"
   for result in all_primers.fasta edited_genome.fasta edited_pTargets.fasta pcr_products.fasta pcr_products.tsv report.tsv; do
@@ -151,6 +155,12 @@ for gene in recA pta hupB; do
     fail "edited pTarget does not start with one intact site1 for $gene"
   grep -q $'\tprimer_qc\tOK\t' "$target_dir/design.log" ||
     fail "design.log lacks primer_qc OK for $gene"
+  if grep -q $'^primer_qc_fallback_used\tTRUE$' "$target_dir/report.tsv"; then
+    grep -q $'\tprimer_qc\tWARNING\t' "$target_dir/design.log" ||
+      fail "design.log lacks a fallback warning for $gene"
+    grep -q 'Предупреждения primer QC' "$wet_target_dir/wet_lab_report.txt" ||
+      fail "WetLab report lacks fallback warnings for $gene"
+  fi
   Rscript - "$target_dir" <<'EOF' || fail "selected primer QC trace is invalid for $gene"
 args <- commandArgs(trailingOnly = TRUE)
 target_dir <- args[[1]]
@@ -170,13 +180,21 @@ stopifnot(all(vapply(
   function(reaction) any(selected_amplicons$reaction == reaction & selected_amplicons$intended),
   logical(1)
 )))
-stopifnot(!any(selected_amplicons$off_target & !selected_amplicons$invalid_size))
+stopifnot(all(selected$structure_passed & selected$blocking_passed))
+if (any(selected$fallback_selected)) {
+  stopifnot(all(nzchar(selected$risk_warnings[selected$fallback_selected])))
+} else {
+  stopifnot(all(selected$strict_qc_passed))
+}
 EOF
 done
+
+[[ "$success_count" -gt 0 ]] ||
+  fail "default filtering did not produce any design for the test genes"
 
 grep -Rq $'\tprimer_qc\tTRY\t' "$TECH_REPORT_DIR"/*_results/design.log ||
   fail "integration run did not exercise physical primer QC"
 grep -Rq $'\tprimer_qc\tREJECTED\t' "$TECH_REPORT_DIR"/*_results/design.log ||
   fail "integration run did not record a candidate rejection"
 
-printf 'TEST PASSED: MG1655 recA, pta and hupB produced valid selected designs or explicit strict-QC rejection traces.\n'
+printf 'TEST PASSED: default filtering produced a design or an explicit structural/core-QC rejection for every target.\n'

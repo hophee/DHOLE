@@ -52,6 +52,7 @@ assert_true(
   defaults$primer3 == "primer3/src/primer3_core",
   "Primer3 path default is incorrect"
 )
+assert_true(defaults$filtering_level == 2L, "filtering_level default is not 2")
 assert_true(defaults$n20_mn == 1L, "n20_mn default is not 1")
 assert_true(defaults$n20_strands == "random", "strand default is not random")
 assert_true(identical(defaults$n20_offtarget, 0L), "MM default is not 0")
@@ -87,6 +88,7 @@ assert_true(
 
 configured <- parse_designer_args(c(
   base_args,
+  "--filtering-level", "3",
   "--n20-mn", "3",
   "--n20-strands", "both",
   "--n20-offtarget", "0,2,4",
@@ -94,6 +96,7 @@ configured <- parse_designer_args(c(
   "--site2", "aagctt",
   "--cds-fs"
 ))
+assert_true(configured$filtering_level == 3L, "filtering_level was not parsed")
 assert_true(configured$n20_mn == 3L, "n20_mn was not parsed")
 assert_true(configured$n20_strands == "both", "strand mode was not parsed")
 assert_true(
@@ -120,6 +123,10 @@ assert_error(
 assert_error(
   parse_designer_args(c(base_args, "--left-arm-min", "401")),
   "min <= opt <= max"
+)
+assert_error(
+  parse_designer_args(c(base_args, "--filtering-level", "4")),
+  "1, 2 или 3"
 )
 assert_error(
   parse_designer_args(c(base_args, "--site1", "ACTNGT")),
@@ -413,6 +420,9 @@ ranking_candidates <- data.frame(
   structure_passed = c(TRUE, TRUE, TRUE),
   specificity_passed = c(FALSE, TRUE, TRUE),
   openprimer_passed = c(TRUE, TRUE, TRUE),
+  strict_qc_passed = c(FALSE, TRUE, TRUE),
+  blocking_passed = c(FALSE, TRUE, TRUE),
+  n_expected_product_deviations = c(0, 0, 0),
   n_high_risk_offtarget_products = c(0, 0, 0),
   n_all_offtarget_products = c(0, 0, 0),
   n_perfect_3p_offtarget_sites = c(0, 0, 0),
@@ -438,6 +448,129 @@ assert_true(
   select_best_primer_pair(ranking_candidates[2:3, ])$pair$pair_id[[1]] ==
     "second",
   "Primer ranking is not deterministic"
+)
+
+risky_specificity <- list(
+  passed = FALSE,
+  rejection_reason = "off_target_products=1",
+  n_expected_products = 1L,
+  n_high_risk_offtarget_products = 1L,
+  n_all_offtarget_products = 1L,
+  n_perfect_3p_offtarget_sites = 2L
+)
+optional_openprimer_failure <- list(
+  passed = FALSE,
+  rejection_reason = "openprimer_failed:EVAL_gc_clamp",
+  abs_tm_diff = 2
+)
+lite_policy <- evaluate_filtering_policy(
+  risky_specificity,
+  optional_openprimer_failure,
+  1L
+)
+default_policy <- evaluate_filtering_policy(
+  risky_specificity,
+  optional_openprimer_failure,
+  2L
+)
+hard_policy <- evaluate_filtering_policy(
+  risky_specificity,
+  optional_openprimer_failure,
+  3L
+)
+assert_true(
+  lite_policy$blocking_passed && default_policy$blocking_passed &&
+    !hard_policy$blocking_passed &&
+    grepl("high_risk_off_target_products", hard_policy$blocking_reasons),
+  "Filtering levels do not distinguish report, warning, and hard risks"
+)
+
+missing_specificity <- risky_specificity
+missing_specificity$n_expected_products <- 0L
+missing_openprimer <- unavailable_openprimer_result(
+  "test",
+  "expected product is unavailable"
+)
+assert_true(
+  evaluate_filtering_policy(
+    missing_specificity,
+    missing_openprimer,
+    1L
+  )$blocking_passed &&
+    !evaluate_filtering_policy(
+      missing_specificity,
+      missing_openprimer,
+      2L
+    )$blocking_passed,
+  "Lite and default filtering do not differ on a missing intended product"
+)
+
+optional_specificity <- risky_specificity
+optional_specificity$passed <- TRUE
+optional_specificity$rejection_reason <- ""
+optional_specificity$n_high_risk_offtarget_products <- 0L
+optional_specificity$n_all_offtarget_products <- 0L
+optional_specificity$n_perfect_3p_offtarget_sites <- 0L
+hard_optional_policy <- evaluate_filtering_policy(
+  optional_specificity,
+  optional_openprimer_failure,
+  3L
+)
+assert_true(
+  hard_optional_policy$blocking_passed &&
+    grepl("EVAL_gc_clamp", hard_optional_policy$warnings),
+  "Hard filtering treated an optional openPrimeR criterion as blocking"
+)
+openprimer_unavailable_with_tm <- unavailable_openprimer_result(
+  "test",
+  "secondary-structure executable missing",
+  3,
+  "Primer3 fallback"
+)
+assert_true(
+  evaluate_filtering_policy(
+    optional_specificity,
+    openprimer_unavailable_with_tm,
+    3L
+  )$blocking_passed,
+  "Hard filtering rejected an available safe Primer3 Tm fallback"
+)
+
+temperature_risk <- optional_specificity
+large_tm <- optional_openprimer_failure
+large_tm$abs_tm_diff <- 6
+assert_true(
+  !evaluate_filtering_policy(temperature_risk, large_tm, 3L)$blocking_passed,
+  "Hard filtering accepted a large Tm difference"
+)
+
+fallback_candidates <- ranking_candidates[2:3, ]
+fallback_candidates$strict_qc_passed <- FALSE
+fallback_candidates$blocking_passed <- TRUE
+fallback_candidates$risk_warnings <- c("gc_clamp", "secondary_structure")
+fallback_selection <- select_best_primer_pair(fallback_candidates)
+assert_true(
+  fallback_selection$pair$pair_id[[1]] == "second" &&
+    fallback_selection$pair$fallback_selected[[1]],
+  "Best non-blocking fallback candidate was not selected"
+)
+
+strict_preference <- fallback_candidates
+strict_preference$strict_qc_passed[[2]] <- TRUE
+strict_preference$openprimer_penalty <- c(0, 100)
+strict_selection <- select_best_primer_pair(strict_preference)
+assert_true(
+  strict_selection$pair$pair_id[[1]] == "third" &&
+    !strict_selection$pair$fallback_selected[[1]],
+  "A better-ranked fallback displaced an available strict candidate"
+)
+
+intended_preference <- fallback_candidates
+intended_preference$n_expected_product_deviations <- c(1, 0)
+intended_selection <- select_best_primer_pair(intended_preference)
+assert_true(
+  intended_selection$pair$pair_id[[1]] == "third",
+  "Lite fallback did not prefer a candidate with one intended product"
 )
 
 assert_error(
@@ -735,6 +868,11 @@ write_wet_lab_outputs(
   n20_distances,
   list(
     pair_id = "screening_02",
+    filtering_level = 2L,
+    filtering_mode = "default",
+    selection_status = "selected_with_warnings",
+    fallback_used = TRUE,
+    warnings = "secondary_structure",
     offtarget_products = 0L,
     high_risk_offtarget_products = 0L,
     perfect_3p_offtarget_sites = 0L,
@@ -816,6 +954,11 @@ assert_true(
   any(grepl("Оффтаргетные ПЦР-продукты, всего.*0", wet_lab_report)) &&
     any(grepl("GC-состав forward-праймера.*50", wet_lab_report)),
   "WetLab report lacks readable screening primer QC"
+)
+assert_true(
+  any(grepl("Режим фильтрации праймеров.*2 \\(default\\)", wet_lab_report)) &&
+    any(grepl("Предупреждения primer QC.*secondary_structure", wet_lab_report)),
+  "WetLab report lacks filtering mode or fallback warnings"
 )
 assert_true(
   any(grepl("edited_genome.fasta.*edited_genome", wet_lab_report)) &&
