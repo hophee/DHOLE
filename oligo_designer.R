@@ -2183,9 +2183,7 @@ make_design_input <- function(cli) {
     output_dir = cli$output_dir[[1]],
     tools = list(
       chopchop_script = project_tool(cli$chopchop_script[[1]], "chopchop/chopchop.py"),
-      chopchop_python = if (cli$chopchop_python[[1]] == "chopchop-python") {
-        file.path(.dhole_project_dir, "tools", "chopchop-python")
-      } else cli$chopchop_python[[1]],
+      chopchop_python = cli$chopchop_python[[1]],
       primer3 = project_tool(cli$primer3[[1]], "primer3/src/primer3_core"),
       primer3_config = file.path(.dhole_project_dir, "primer3/src/primer3_config")
     ),

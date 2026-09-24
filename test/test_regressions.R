@@ -26,6 +26,29 @@ expect_error(find_oriented_restriction_pair(paste0("ACTAGTGGGCTGCAG", cassette),
 check(identical(circular_match_positions("AAAA", "AAA"), 1:4),
       "Overlapping/circular sites were missed")
 
+# The installed CHOPCHOP interpreter is a PATH command, not a project file.
+local({
+  directory <- tempfile(); dir.create(directory)
+  on.exit(unlink(directory, recursive = TRUE))
+  genome <- file.path(directory, "genome.fasta")
+  annotation <- file.path(directory, "genome.gff")
+  target <- file.path(directory, "target.fasta")
+  writeLines(c(">chr", strrep("ACGT", 100)), genome)
+  writeLines("chr\ttest\tCDS\t10\t300\t.\t+\t0\tID=cds1;gene=test_gene", annotation)
+  writeLines(c(">target", plasmid), target)
+  cli <- parse_designer_args(c(
+    "--genome", genome, "--genome-annotation", annotation,
+    "--annotation-format", "gff", "--target-plasmid", target,
+    "--output-dir", directory, "--cds", "test_gene"
+  ))
+  check(identical(make_design_input(cli)$tools$chopchop_python, "chopchop-python"),
+        "Default CHOPCHOP interpreter was replaced with a nonexistent project path")
+  custom_python <- file.path(directory, "custom-python")
+  cli$chopchop_python <- custom_python
+  check(identical(make_design_input(cli)$tools$chopchop_python, custom_python),
+        "Explicit CHOPCHOP interpreter path was overridden")
+})
+
 # 4, 13: separately specified genomic N20 and PAM on both strands.
 local({
   path <- tempfile(fileext = ".tsv")
