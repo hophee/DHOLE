@@ -8,7 +8,7 @@ assert_true <- function(value, message) {
   }
 }
 
-test_screening_fixture <- function(strand, retry = FALSE) {
+test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
   target_dir <- tempfile("2pac-screening-fixture-")
   dir.create(target_dir)
   on.exit(unlink(target_dir, recursive = TRUE), add = TRUE)
@@ -85,14 +85,15 @@ test_screening_fixture <- function(strand, retry = FALSE) {
         n_high_risk_offtarget_products = as.integer(!passed),
         n_all_offtarget_products = as.integer(!passed),
         n_perfect_3p_offtarget_sites = as.integer(!passed),
+        n_expected_products = as.integer(passed),
         rejection_reason = if (passed) "" else "off_target_products=1"
       )
       openprimer <- if (passed) {
         list(
-          passed = TRUE,
+          passed = !fallback,
           metrics = data.frame(
             reaction = reaction,
-            constraints_passed = TRUE,
+            constraints_passed = !fallback,
             penalty = 1,
             stringsAsFactors = FALSE
           ),
@@ -100,9 +101,23 @@ test_screening_fixture <- function(strand, retry = FALSE) {
           penalty = 1,
           max_dimer_risk = 0,
           abs_tm_diff = 0.1,
-          rejection_reason = ""
+          rejection_reason = if (fallback) {
+            "openprimer_failed:EVAL_secondary_structure"
+          } else ""
         )
       } else NULL
+      if (is.null(openprimer)) {
+        openprimer <- unavailable_openprimer_result(
+          reaction,
+          "expected product is unavailable"
+        )
+      }
+      policy <- evaluate_filtering_policy(
+        specificity,
+        openprimer,
+        input$parameters$filtering_level,
+        input$parameters$primer_qc
+      )
       append_primer_qc_trace(
         trace,
         reaction,
@@ -111,10 +126,12 @@ test_screening_fixture <- function(strand, retry = FALSE) {
         openprimer = openprimer
       )
       list(
-        passed = passed,
+        passed = policy$blocking_passed,
         specificity = specificity,
         openprimer = openprimer,
-        rejection_reason = specificity$rejection_reason
+        policy = policy,
+        rejection_reason = policy$blocking_reasons,
+        risk_warnings = policy$warnings
       )
     },
     envir = .GlobalEnv
@@ -128,6 +145,9 @@ test_screening_fixture <- function(strand, retry = FALSE) {
     structure_passed = TRUE,
     specificity_passed = TRUE,
     openprimer_passed = TRUE,
+    strict_qc_passed = TRUE,
+    blocking_passed = TRUE,
+    n_expected_product_deviations = 0L,
     n_high_risk_offtarget_products = 0L,
     n_all_offtarget_products = 0L,
     n_perfect_3p_offtarget_sites = 0L,
@@ -138,6 +158,8 @@ test_screening_fixture <- function(strand, retry = FALSE) {
     primer3_pair_penalty = 0.1,
     deleted_nt = 200L,
     selected = TRUE,
+    fallback_selected = FALSE,
+    risk_warnings = "",
     rejection_reason = "",
     stringsAsFactors = FALSE
   )
@@ -194,6 +216,7 @@ test_screening_fixture <- function(strand, retry = FALSE) {
     )),
     target_plasmid_name = "fixture_pTarget",
     parameters = list(
+      filtering_level = 2L,
       cds_fs = FALSE,
       ncrna_fs = FALSE,
       n20_offtarget = 0L,
@@ -256,14 +279,21 @@ test_screening_fixture <- function(strand, retry = FALSE) {
   }
   output_id <- paste0(arms$selected_pair_id, "_outputs_", ifelse(retry, 2L, 1L))
   expected_pair_id <- paste0(output_id, "_screening_02")
-  result <- write_design_outputs(
-    input,
-    feature,
-    selected,
-    arms,
-    "cds",
-    target_dir,
-    log_path
+  emitted_warnings <- character()
+  result <- withCallingHandlers(
+    write_design_outputs(
+      input,
+      feature,
+      selected,
+      arms,
+      "cds",
+      target_dir,
+      log_path
+    ),
+    warning = function(condition) {
+      emitted_warnings <<- c(emitted_warnings, conditionMessage(condition))
+      invokeRestart("muffleWarning")
+    }
   )
   write_primer_qc_trace(result$primer_qc_trace, target_dir)
   wet_lab_dir <- file.path(target_dir, "WetLab")
@@ -374,6 +404,17 @@ test_screening_fixture <- function(strand, retry = FALSE) {
     "TechReport must contain the independently expected screening sizes"
   )
   assert_true(
+    any(report == paste0(
+      "primer_qc_fallback_used\t",
+      ifelse(fallback, "TRUE", "FALSE")
+    )) &&
+      (!fallback || any(grepl(
+        "primer_qc_warnings.*secondary_structure",
+        report
+      ))),
+    "TechReport lacks the primer-QC fallback status or warnings"
+  )
+  assert_true(
     result$wet_lab$n20_distances$left_arm_distance_bp[[1]] ==
       ifelse(strand == "+", 59L, 121L) &&
       result$wet_lab$n20_distances$right_arm_distance_bp[[1]] ==
@@ -442,10 +483,29 @@ test_screening_fixture <- function(strand, retry = FALSE) {
       any(grepl("DECIPHER::AmplifyDNA", wet_lab_report, fixed = TRUE)),
     "Selected screening QC was not written to the WetLab report"
   )
+  assert_true(
+    any(grepl(
+      paste0("QC fallback.*", ifelse(fallback, "TRUE", "FALSE")),
+      wet_lab_report
+    )) &&
+      (!fallback || any(grepl(
+        "Предупреждения primer QC.*secondary_structure",
+        wet_lab_report
+      ))),
+    "WetLab report lacks the primer-QC fallback status or warnings"
+  )
+  if (fallback) {
+    assert_true(
+      any(grepl("primer_qc\tWARNING\t.*secondary_structure", log_lines)) &&
+        any(grepl("QC-рисками.*secondary_structure", emitted_warnings)),
+      "Fallback warning is missing from design.log or command output"
+    )
+  }
 }
 
 test_screening_fixture("+")
 test_screening_fixture("-")
 test_screening_fixture("+", retry = TRUE)
+test_screening_fixture("+", fallback = TRUE)
 
 message("Screening integration fixture passed")

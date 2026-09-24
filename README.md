@@ -5,9 +5,11 @@ primers, and an edited-genome model for bacterial CDS and ncRNA targets.
 
 Primer selection is candidate-based: Primer3 proposes up to ten pairs per
 homology arm and five screening pairs, then 2PAC applies structural rules,
-exhaustive Biostrings specificity, mandatory openPrimeR QC, and a stable
-lexicographic ranking. A rejected first Primer3 row no longer rejects the
-target. If all rows fail, 2PAC continues with the next admissible N20 set.
+exhaustive Biostrings specificity, openPrimeR QC, and a stable lexicographic
+ranking. Three filtering levels control which primer-QC risks block selection.
+A rejected first Primer3 row no longer rejects the target. If no ideal row is
+available, the best candidate allowed by the selected level is returned with
+explicit warnings.
 
 ## Installation
 
@@ -22,8 +24,10 @@ The environment is split to preserve the legacy Python 2 CHOPCHOP stack:
 Run `./install.sh` for a complete installation. The installer uses
 `pak::pkg_install()` for CRAN/Bioconductor dependencies and explicitly targets
 R's `.Library` inside `oligo_design`; it does not install them into a user
-library. The pipeline fails closed when a required openPrimeR constraint or
-executable is unavailable.
+library. Missing openPrimeR constraints or executables are reported as QC
+risks. Level 3 uses the Primer3 pair ΔTm as a fallback for its temperature
+gate; it blocks selection only when that value is unavailable or exceeds the
+hard limit.
 
 Java remains required by the `rmelting` JAR behind `tools/melting-batch` and is
 installed through Conda (`openjdk`). `pak` may still report the OS package
@@ -48,6 +52,7 @@ bash tools/run-r oligo_designer.R \
   --genome-annotation genome.gff \
   --annotation-format gff \
   --target-plasmid pTarget.fasta \
+  --filtering-level 2 \
   --site1 ACTAGT \
   --site2 CTGCAG \
   --cas-plasmid pCas.fasta \
@@ -67,6 +72,7 @@ requires exactly one pTarget record.
 
 | Argument | Default | Meaning |
 |---|---:|---|
+| `--filtering-level` | `2` | `1` lite/report, `2` default/warn, `3` hard/core |
 | `--n20-mn` | `1` | Required N20 count |
 | `--n20-strands` | `random` | `plus`, `minus`, `both`, or unconstrained `random` |
 | `--n20-offtarget` | `0` | Maximum CHOPCHOP `MM0,MM1,...` values |
@@ -81,34 +87,38 @@ requires exactly one pTarget record.
 | `--primer-max-3p-mismatches` | `0` | Allowed mismatches in that region |
 | `--primer-min-product-size` | `50` | Minimum counted amplicon size |
 | `--primer-max-product-size` | `2000` | Maximum counted amplicon size |
-| `--primer-max-offtarget-products` | `0` | Allowed non-intended amplicons |
+| `--primer-max-offtarget-products` | `0` | Preferred maximum non-intended amplicons |
 
 The legacy Primer3 generation thresholds remain unchanged: primer length
 `18/21/27` nt (min/opt/max), homopolymer maximum `5`, and pair Tm difference
-maximum `8 °C`. Candidates outside the stricter openPrimeR profile are retained
-in the trace and rejected at its explicit hard gate. Primer3 buffer defaults
+maximum `8 °C`. Candidates outside the stricter openPrimeR profile remain in
+the trace and may be used as a warned fallback according to the filtering
+level. Primer3 buffer defaults
 remain 50 mM monovalent salt, 1.5 mM Mg, 0.6 mM dNTP, and 50 nM DNA.
 `run_parameters.tsv` records these values, the active constraints, their
 effective limits, package versions, and tool paths.
 
 ## Selection policy
 
-Candidates pass four non-compensating levels:
+Arm geometry, feature bounds, N20 distance, frame, deletion rules, and Primer3
+generation are identical at all filtering levels. The levels affect only PCR
+specificity and openPrimeR QC:
 
-1. Existing arm geometry, feature bounds, N20 distance, frame, and deletion
-   rules.
-2. An explicitly identified expected product and no forbidden off-target
-   products across genome, pTarget, and pCas. Exhaustive binding-site pairing
-   is authoritative; `matchProbePair()` is retained as a comparison generator.
-3. Mandatory openPrimeR constraints. Annealing sequence is used for length,
-   GC, Tm, efficiency/coverage; the ordered full oligo is used for self/cross
-   dimers and secondary structure. Only primers in one physical PCR reaction
-   are evaluated together.
-4. Deterministic lexicographic ranking by off-target risk, soft failures,
-   openPrimeR penalty, dimer risk, Tm difference, Primer3 penalty, deleted
-   nucleotides, and original Primer3 order.
+1. `lite` — report only. Specificity and openPrimeR metrics rank candidates but
+   do not block a structurally valid Primer3 pair.
+2. `default` — warn and continue. Exactly one intended PCR product is required;
+   off-target and openPrimeR failures are ranked risks and may be returned with
+   warnings.
+3. `hard` — core gates. Exactly one intended product, zero high-risk off-target
+   products with perfect primer 3′ ends, and an evaluated pair ΔTm of at most
+   `5 °C` are mandatory. Other openPrimeR and specificity criteria remain
+   optimization criteria and may appear in a warned fallback.
 
-No soft score can compensate for a failed hard gate.
+At every level a candidate passing the former complete strict profile is
+preferred. If none exists, the best candidate passing the level's core gates is
+selected by intended-product availability, off-target risk, openPrimeR penalty,
+dimer risk, Tm difference, Primer3 penalty, deleted nucleotides, and original
+Primer3 order. Core gates cannot be compensated by a score.
 
 ## Output
 
@@ -135,8 +145,9 @@ results/
 ```
 
 The four primer QC tables preserve every evaluated binding site, amplicon,
-openPrimeR metric/`EVAL_*` result, gate, rank component, selection flag, and
-rejection reason. `design.log` records `primer_qc TRY`, `REJECTED`, and `OK`.
+openPrimeR metric/`EVAL_*` result, filtering level, strict/core gate, fallback
+flag, warning, rank component, selection flag, and rejection reason.
+`design.log` records `primer_qc TRY`, `REJECTED`, `OK`, and `WARNING`.
 For every successful target, `wet_lab_report.txt` contains the complete final
 oligo set, modelled-construction names and lengths, primer Tm values, expected
 screening products for edited and unedited alleles, per-N20 distances to both
@@ -155,9 +166,11 @@ Because long 5-prime tails do not anneal during the initial cycle, DECIPHER is
 given the post-first-cycle template in which those tails have been incorporated.
 The reported location always refers to the original biological template.
 
-WetLab output is created only after homology and screening pairs pass all
-gates. Failed targets keep their technical trace and `error.txt`; other targets
-continue.
+WetLab output is created only after homology and screening pairs pass the
+non-relaxable gates of the selected level. A fallback is marked in command
+output, `design.log`, `report.tsv`, `primer_pair_ranking.tsv`, and
+`wet_lab_report.txt`. Failed targets keep their technical trace and `error.txt`;
+other targets continue.
 
 Run tests with:
 
@@ -167,7 +180,7 @@ bash tools/run-r test/test_unit.R
 bash test/test_run.sh
 ```
 
-### Strict-QC integration baseline
+### QC integration baseline
 
 The MG1655 fixture deliberately limits arms to `350/450` nt. Its effective
 high-stringency limits are: primer length `18..22`, GC ratio `0.4..0.6`, GC
@@ -175,9 +188,8 @@ clamp `1..3`, runs and repeats `0..4`, Tm `55..65 °C`, pair ΔTm `0..5 °C`,
 self-dimer ΔG `>= -5`, cross-dimer ΔG `>= -7`, secondary-structure ΔG
 `>= -1`, and primer efficiency `>= 0.001`.
 
-With this fixture, `recA` and `hupB` currently exhaust structural homology-arm
-candidates before openPrimeR; `pta` reaches `primer_qc` but has no pair passing
-all hard gates. These are explicit strict-QC baseline outcomes, not successful
-primer designs. `test_screening_fixture.R` independently verifies the complete
-successful `scrF/scrR` path, including rejection of Primer3 row 1 and selection
-of row 2.
+`recA` and `hupB` may still exhaust structural homology-arm candidates; the
+filtering level intentionally does not change that geometry. The default-mode
+integration requires at least one test target to produce a complete design.
+`test_screening_fixture.R` independently verifies strict selection, rejection
+of Primer3 row 1, fallback warnings, and selection of row 2.
