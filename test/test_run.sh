@@ -15,6 +15,7 @@ fi
 
 readonly TEST_DIR="$(dirname -- "$TEST_SCRIPT")"
 readonly PROJECT_DIR="$(cd -- "$TEST_DIR/.." && pwd)"
+readonly R_RUNNER="$PROJECT_DIR/tools/run-r"
 readonly OUTPUT_DIR="$TEST_DIR/test_output"
 readonly WET_LAB_DIR="$OUTPUT_DIR/WetLab"
 readonly TECH_REPORT_DIR="$OUTPUT_DIR/TechReport"
@@ -44,11 +45,12 @@ EOF
 rm -rf "$OUTPUT_DIR"
 cd "$PROJECT_DIR" || fail "cannot enter project directory"
 
-Rscript test/test_unit.R || fail "unit tests failed"
-Rscript test/test_regressions.R || fail "regression tests failed"
-Rscript test/test_screening_fixture.R || fail "screening fixture failed"
+bash test/test_r_environment.sh || fail "R environment isolation failed"
+bash "$R_RUNNER" test/test_unit.R || fail "unit tests failed"
+bash "$R_RUNNER" test/test_regressions.R || fail "regression tests failed"
+bash "$R_RUNNER" test/test_screening_fixture.R || fail "screening fixture failed"
 
-if ! Rscript oligo_designer.R \
+if ! bash "$R_RUNNER" oligo_designer.R \
   --genome "$TEST_DIR/MG1655.fna" \
   --genome-annotation "$TEST_DIR/MG1655.gff" \
   --annotation-format gff \
@@ -147,7 +149,7 @@ for gene in recA pta hupB; do
     fail "edited pTarget does not start with one intact site1 for $gene"
   grep -q $'\tprimer_qc\tOK\t' "$target_dir/design.log" ||
     fail "design.log lacks primer_qc OK for $gene"
-  Rscript - "$target_dir" <<'EOF' || fail "selected primer QC trace is invalid for $gene"
+  bash "$R_RUNNER" - "$target_dir" <<'EOF' || fail "selected primer QC trace is invalid for $gene"
 args <- commandArgs(trailingOnly = TRUE)
 target_dir <- args[[1]]
 ranking <- read.delim(file.path(target_dir, "primer_pair_ranking.tsv"), check.names = FALSE)

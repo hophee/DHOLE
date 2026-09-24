@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly R_RUNNER="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/run-r"
 melting_jar="${MELTING_JAR:-}"
 melting_data="${MELTING_DATA:-}"
 if [[ -z "$melting_jar" ]]; then
-  melting_jar="$(Rscript -e 'cat(system.file("java", "melting5.jar", package = "rmelting"))')"
+  melting_jar="$(bash "$R_RUNNER" -e 'cat(system.file("java", "melting5.jar", package = "rmelting"))')"
 fi
 if [[ -z "$melting_data" ]]; then
-  melting_data="$(Rscript -e 'cat(system.file("extdata", "Data", package = "rmelting"))')"
+  melting_data="$(bash "$R_RUNNER" -e 'cat(system.file("extdata", "Data", package = "rmelting"))')"
 fi
 if [[ ! -s "$melting_jar" ]]; then
   printf 'MELTING JAR not found; install the Bioconductor rmelting package.\n' >&2

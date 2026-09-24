@@ -25,12 +25,25 @@ R's `.Library` inside `oligo_design`; it does not install them into a user
 library. The pipeline fails closed when a required openPrimeR constraint or
 executable is unavailable.
 
-Java remains required by the `rmelting` JAR behind `tools/melting-batch`.
+Java remains required by the `rmelting` JAR behind `tools/melting-batch` and is
+installed through Conda (`openjdk`). `pak` may still report the OS package
+`java-11-openjdk-devel` as missing: `PKG_SYSREQS=false` disables installation
+of OS packages, but not their reporting (see the
+[pak configuration reference](https://pak.r-lib.org/reference/pak-config.html)).
+The final installer check loads `rJava` and `rmelting`, initializes the JVM,
+and checks for `java` and `javac`; a failed check makes installation fail.
+
+Use `bash tools/run-r` in place of `Rscript` for this project. It selects
+`oligo_design`, ignores R startup files, and excludes inherited `R_LIBS*`
+paths. The installer, test runner, and MELTING package lookup use it too.
+This prevents packages built for another R version in a shared user library
+from causing errors such as `rlang.so: undefined symbol: R_MakeMissingBinding`.
+`Rscript --vanilla` alone does not clear inherited library paths.
 
 ## Usage
 
 ```bash
-Rscript oligo_designer.R \
+bash tools/run-r oligo_designer.R \
   --genome genome.fasta \
   --genome-annotation genome.gff \
   --annotation-format gff \
@@ -149,7 +162,8 @@ continue.
 Run tests with:
 
 ```bash
-conda run -n oligo_design Rscript test/test_unit.R
+bash test/test_r_environment.sh
+bash tools/run-r test/test_unit.R
 bash test/test_run.sh
 ```
 

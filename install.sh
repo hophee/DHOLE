@@ -14,6 +14,7 @@ readonly VIENNARNA_ENV_NAME="oligo_design_viennarna"
 
 readonly TEST_DIR="$PROJECT_DIR/test"
 readonly MELTING_WRAPPER="$PROJECT_DIR/tools/melting-batch"
+readonly R_RUNNER="$PROJECT_DIR/tools/run-r"
 
 readonly MG1655_REFSEQ_URL="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/005/845/GCF_000005845.2_ASM584v2"
 readonly MG1655_GENOME_URL="$MG1655_REFSEQ_URL/GCF_000005845.2_ASM584v2_genomic.fna.gz"
@@ -219,6 +220,10 @@ target_library <- normalizePath(.Library, mustWork = TRUE)
 message("R version: ", R.version.string)
 message("Conda R library: ", target_library)
 message("Installing R dependencies with pak...")
+message(
+  "pak may report missing OS packages even with PKG_SYSREQS=false. ",
+  "Java is supplied by Conda; the final runtime check verifies the JVM."
+)
 
 result <- pak::pkg_install(
   packages,
@@ -235,10 +240,7 @@ RSCRIPT
 
   PKG_SYSREQS=false \
   USE_BUNDLED_LIBUV=1 \
-  conda run \
-    --no-capture-output \
-    --name "$CONDA_ENV_NAME" \
-    Rscript --vanilla "$temporary_script"
+  bash "$R_RUNNER" "$temporary_script"
 
   local status=$?
   rm -f "$temporary_script"
@@ -250,10 +252,7 @@ verify_primer_qc_dependencies() {
   local project_dir=$PROJECT_DIR
 
   TWO_PAC_PROJECT_DIR="$project_dir" \
-  conda run \
-    --no-capture-output \
-    --name "$CONDA_ENV_NAME" \
-    Rscript --vanilla -e '
+  bash "$R_RUNNER" -e '
 
     #
     # OligoArrayAux data files
@@ -285,6 +284,7 @@ verify_primer_qc_dependencies() {
       "Biostrings",
       "DECIPHER",
       "openPrimeR",
+      "rJava",
       "rmelting"
     )
 
@@ -323,6 +323,12 @@ verify_primer_qc_dependencies() {
       loadNamespace(package_name)
     }
 
+    message("Checking Java runtime through rJava...")
+    if (rJava::.jinit() < 0L) {
+      stop("Cannot initialize the Java VM through rJava", call. = FALSE)
+    }
+    message("Java VM initialized successfully.")
+
     expected_versions <- c(
       Biostrings = "2.78.0",
       DECIPHER = "3.6.0",
@@ -356,6 +362,8 @@ verify_primer_qc_dependencies() {
       "RNAduplex",
       "RNAsubopt",
       "melting-batch",
+      "java",
+      "javac",
       "chopchop-python"
     )
 
