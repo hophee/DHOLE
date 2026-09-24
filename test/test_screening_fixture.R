@@ -102,7 +102,10 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
           max_dimer_risk = 0,
           abs_tm_diff = 0.1,
           rejection_reason = if (fallback) {
-            "openprimer_failed:EVAL_secondary_structure"
+            paste0(
+              "openprimer_failed:EVAL_primer_length[",
+              "primer_length_fw=24 нт (18–22 нт)]"
+            )
           } else ""
         )
       } else NULL
@@ -409,7 +412,7 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
       ifelse(fallback, "TRUE", "FALSE")
     )) &&
       (!fallback || any(grepl(
-        "primer_qc_warnings.*secondary_structure",
+        "primer_qc_warnings.*primer_length_fw=24 нт.*18–22 нт",
         report
       ))),
     "TechReport lacks the primer-QC fallback status or warnings"
@@ -489,15 +492,21 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
       wet_lab_report
     )) &&
       (!fallback || any(grepl(
-        "Предупреждения primer QC.*secondary_structure",
+        "Предупреждения primer QC.*primer_length_fw=24 нт.*18–22 нт",
         wet_lab_report
       ))),
     "WetLab report lacks the primer-QC fallback status or warnings"
   )
   if (fallback) {
     assert_true(
-      any(grepl("primer_qc\tWARNING\t.*secondary_structure", log_lines)) &&
-        any(grepl("QC-рисками.*secondary_structure", emitted_warnings)),
+      any(grepl(
+        "primer_qc\tWARNING\t.*primer_length_fw=24 нт.*18–22 нт",
+        log_lines
+      )) &&
+        any(grepl(
+          "QC-рисками.*primer_length_fw=24 нт.*18–22 нт",
+          emitted_warnings
+        )),
       "Fallback warning is missing from design.log or command output"
     )
   }

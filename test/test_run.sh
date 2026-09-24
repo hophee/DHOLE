@@ -387,6 +387,20 @@ if [[ -n "$target_summary" ]]; then
   console "  $target_summary"
 fi
 
+if [[ "$verbose" -eq 0 ]]; then
+  qc_violation_summary="$(
+    awk '
+      /^=== \[6\/6\].*: START ===$/ { in_integration = 1; next }
+      /^=== \[6\/6\].*: END / { in_integration = 0 }
+      in_integration && /Выбраны праймеры с QC-рисками/ && !seen[$0]++
+    ' "$TEST_LOG" || true
+  )"
+  if [[ -n "$qc_violation_summary" ]]; then
+    console 'QC threshold violations:'
+    console "$qc_violation_summary"
+  fi
+fi
+
 if [[ "$had_warnings" -eq 1 ]]; then
   status_line 'OVERALL RESULT: PASS WITH WARNINGS'
 else

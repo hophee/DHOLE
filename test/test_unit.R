@@ -617,6 +617,45 @@ assert_true(
   "Cross-dimerization groups mix primers from different PCR reactions"
 )
 
+formatted_failures <- format_openprimer_failures(
+  data.frame(
+    primer_length_fw = 24,
+    primer_length_rev = 20,
+    no_runs_fw = 5,
+    no_runs_rev = 4,
+    Structure_deltaG = -2.25,
+    stringsAsFactors = FALSE
+  ),
+  c("EVAL_primer_length", "EVAL_no_runs", "EVAL_secondary_structure"),
+  list(
+    primer_length = c(min = 18, max = 22),
+    no_runs = c(max = 4),
+    secondary_structure = c(min = -1)
+  )
+)
+assert_true(
+  identical(formatted_failures, c(
+    "EVAL_primer_length[primer_length_fw=24 нт (18–22 нт)]",
+    "EVAL_no_runs[no_runs_fw=5 нт (≤ 4 нт)]",
+    paste0(
+      "EVAL_secondary_structure[Structure_deltaG=-2.25 ккал/моль ",
+      "(≥ -1 ккал/моль)]"
+    )
+  )),
+  "QC failures do not report measured and threshold values"
+)
+assert_true(
+  identical(
+    format_openprimer_failures(
+      data.frame(unrelated_metric = NA_real_),
+      "EVAL_unknown_constraint",
+      list()
+    ),
+    "EVAL_unknown_constraint"
+  ),
+  "Unknown QC failures must preserve their machine-readable flag"
+)
+
 layout <- output_layout("results")
 assert_true(
   identical(layout$wet_lab, file.path("results", "WetLab")),
@@ -658,11 +697,12 @@ assert_true(
   all(c(
     "PRIMER_MIN_SIZE=18",
     "PRIMER_OPT_SIZE=21",
-    "PRIMER_MAX_SIZE=27",
-    "PRIMER_MAX_POLY_X=5",
-    "PRIMER_PAIR_MAX_DIFF_TM=8.0"
+    "PRIMER_MAX_SIZE=22",
+    "PRIMER_MAX_POLY_X=4",
+    "PRIMER_PAIR_MAX_DIFF_TM=5.0",
+    "PRIMER_GC_CLAMP=1"
   ) %in% settings_text),
-  "Legacy Primer3 generation limits changed"
+  "Primer3 generation limits do not match high-stringency QC"
 )
 
 screening_sizes <- calculate_screening_product_sizes(

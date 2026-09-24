@@ -1821,6 +1821,104 @@ evaluate_openprimer_form <- function(
   )
 }
 
+format_qc_number <- function(value) {
+  format(signif(value, 6L), trim = TRUE, scientific = FALSE)
+}
+
+format_openprimer_failures <- function(metrics, failed, constraint_limits) {
+  metric_specs <- list(
+    primer_length = list(
+      columns = c("primer_length_fw", "primer_length_rev"),
+      unit = "нт"
+    ),
+    gc_ratio = list(
+      columns = c("gc_ratio_fw", "gc_ratio_rev"),
+      unit = "%",
+      scale = 100
+    ),
+    gc_clamp = list(
+      columns = c("gc_clamp_fw", "gc_clamp_rev"),
+      unit = "нт"
+    ),
+    no_runs = list(
+      columns = c("no_runs_fw", "no_runs_rev"),
+      unit = "нт"
+    ),
+    no_repeats = list(
+      columns = c("no_repeats_fw", "no_repeats_rev"),
+      unit = ""
+    ),
+    melting_temp_range = list(
+      columns = c("Tm_C_fw", "Tm_C_rev"),
+      unit = "°C"
+    ),
+    melting_temp_diff = list(
+      columns = "melting_temp_diff",
+      unit = "°C"
+    ),
+    primer_coverage = list(
+      columns = "Basic_primer_coverage",
+      unit = ""
+    ),
+    primer_specificity = list(
+      columns = "primer_specificity",
+      unit = "%",
+      scale = 100
+    ),
+    self_dimerization = list(
+      columns = "Self_Dimer_DeltaG",
+      unit = "ккал/моль"
+    ),
+    cross_dimerization = list(
+      columns = "Cross_Dimer_DeltaG",
+      unit = "ккал/моль"
+    ),
+    secondary_structure = list(
+      columns = "Structure_deltaG",
+      unit = "ккал/моль"
+    )
+  )
+  vapply(failed, function(flag) {
+    constraint <- sub("^EVAL_", "", flag)
+    spec <- metric_specs[[constraint]]
+    limits <- constraint_limits[[constraint]]
+    if (is.null(spec) || is.null(limits)) {
+      return(flag)
+    }
+    columns <- intersect(spec$columns, names(metrics))
+    if (!length(columns)) {
+      return(flag)
+    }
+    scale <- if (is.null(spec$scale)) 1 else spec$scale
+    lower <- if ("min" %in% names(limits)) as.numeric(limits[["min"]]) else -Inf
+    upper <- if ("max" %in% names(limits)) as.numeric(limits[["max"]]) else Inf
+    values <- vapply(columns, function(column) {
+      suppressWarnings(as.numeric(unlist(metrics[[column]], use.names = FALSE)[[1]]))
+    }, numeric(1))
+    violated <- is.finite(values) & (values < lower | values > upper)
+    if (!any(violated)) {
+      return(flag)
+    }
+    format_measure <- function(value) {
+      paste0(
+        format_qc_number(value * scale),
+        if (nzchar(spec$unit)) paste0(" ", spec$unit) else ""
+      )
+    }
+    threshold <- if (is.finite(lower) && is.finite(upper)) {
+      paste0(format_qc_number(lower * scale), "–", format_measure(upper))
+    } else if (is.finite(lower)) {
+      paste0("≥ ", format_measure(lower))
+    } else {
+      paste0("≤ ", format_measure(upper))
+    }
+    details <- vapply(columns[violated], function(column) {
+      sprintf("%s=%s (%s)", column, format_measure(values[[column]]), threshold)
+    }, character(1))
+    sprintf("%s[%s]", flag, paste(details, collapse = ", "))
+  }, character(1), USE.NAMES = FALSE)
+}
+
 combine_openprimer_form_results <- function(
   annealing_result,
   full_result,
@@ -1890,10 +1988,15 @@ combine_openprimer_form_results <- function(
     collapse = ","
   )
   failed <- eval_columns[!unlist(metrics[1, eval_columns, drop = FALSE])]
+  failed_details <- format_openprimer_failures(
+    metrics,
+    failed,
+    openPrimeR::constraints(loaded$settings)
+  )
   list(
     passed = isTRUE(metrics$constraints_passed[[1]]),
     rejection_reason = if (isTRUE(metrics$constraints_passed[[1]])) "" else {
-      paste0("openprimer_failed:", paste(failed, collapse = ","))
+      paste0("openprimer_failed:", paste(failed_details, collapse = ","))
     },
     metrics = metrics,
     penalty = metrics$penalty[[1]],
@@ -2735,7 +2838,7 @@ write_primer3_settings <- function(
       "PRIMER_NUM_RETURN=10",
       "PRIMER_MIN_SIZE=18",
       "PRIMER_OPT_SIZE=21",
-      "PRIMER_MAX_SIZE=27",
+      "PRIMER_MAX_SIZE=22",
       "PRIMER_MIN_TM=59.0",
       "PRIMER_OPT_TM=60.0",
       "PRIMER_MAX_TM=61.0",
@@ -2743,14 +2846,15 @@ write_primer3_settings <- function(
       paste0("PRIMER_SALT_DIVALENT=", buffer[["divalent_salt_mm"]]),
       paste0("PRIMER_DNTP_CONC=", buffer[["dntp_mm"]]),
       paste0("PRIMER_DNA_CONC=", buffer[["dna_nm"]]),
-      "PRIMER_PAIR_MAX_DIFF_TM=8.0",
+      "PRIMER_PAIR_MAX_DIFF_TM=5.0",
       "PRIMER_MIN_GC=40.0",
       "PRIMER_MAX_GC=60.0",
+      "PRIMER_GC_CLAMP=1",
       "PRIMER_MAX_SELF_ANY=12.0",
       "PRIMER_MAX_SELF_END=8.0",
       "PRIMER_PAIR_MAX_COMPL_ANY=12.0",
       "PRIMER_PAIR_MAX_COMPL_END=8.0",
-      "PRIMER_MAX_POLY_X=5",
+      "PRIMER_MAX_POLY_X=4",
       paste0("PRIMER_PRODUCT_SIZE_RANGE=", product[[1]], "-", product[[2]]),
       "PRIMER_EXPLAIN_FLAG=1",
       "PRIMER_FIRST_BASE_INDEX=1",
