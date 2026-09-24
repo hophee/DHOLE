@@ -180,6 +180,11 @@ bash tools/run-r test/test_unit.R
 bash test/test_run.sh
 ```
 
+`test_run.sh` prints stage names, statuses, and durations. Full command output is
+written to the timestamped log shown at startup; use `--verbose` to mirror it
+to the console as well. A successful integration that uses QC fallbacks or an
+expected target rejection is reported as `PASS WITH WARNINGS`.
+
 ### QC integration baseline
 
 The MG1655 fixture deliberately limits arms to `350/450` nt. Its effective
