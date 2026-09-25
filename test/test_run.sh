@@ -187,7 +187,7 @@ prepare_workspace() {
 
   cat > "$PLASMID" <<'EOF'
 >synthetic_test_target_plasmid
-GGGACTAGTGTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCTCCCCGGCACCGAGTCGGTGCTTTTTTTAGCGTCAACTCTGCAGAAAA
+GCAGGGGACTAGTACGTACGTACGTACGTACGTGTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGCTTTTTTTGAATTCTCTAGAGTCGACCTGCAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 EOF
 
   cat > "$CAS_PLASMID" <<'EOF'
@@ -250,6 +250,12 @@ run_integration() {
     fail "run_parameters.tsv lacks the default site1"
   grep -q $'^ptarget_site2\tCTGCAG$' "$TECH_REPORT_DIR/run_parameters.tsv" ||
     fail "run_parameters.tsv lacks the default site2"
+  grep -q $'^ptarget_cassette_arc\tshortest$' "$TECH_REPORT_DIR/run_parameters.tsv" ||
+    fail "run_parameters.tsv lacks the default pTarget cassette arc"
+  grep -q $'^ptarget_sgrna_scaffold\tGTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGCTTTTTTT$' "$TECH_REPORT_DIR/run_parameters.tsv" ||
+    fail "run_parameters.tsv lacks the validated sgRNA scaffold"
+  grep -q $'^ptarget_sgrna_annealing_temp_c\t60$' "$TECH_REPORT_DIR/run_parameters.tsv" ||
+    fail "run_parameters.tsv lacks the default sgRNA annealing temperature"
   grep -q $'^primer3_buffer_divalent_salt_mm\t1.5$' "$TECH_REPORT_DIR/run_parameters.tsv" ||
     fail "run_parameters.tsv lacks Primer3 buffer data"
   grep -q $'^primer_qc_critical_3p_bases\t5$' "$TECH_REPORT_DIR/run_parameters.tsv" ||

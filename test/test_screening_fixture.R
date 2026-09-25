@@ -206,16 +206,21 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
   substr(genome_sequence, 1231L, 1250L) <- reverse_complement_string(
     "CGTACGATCGTAGCATCGAC"
   )
+  ptarget_cassette <- paste0(
+    "ACGTACGTACGTACGTACGT",
+    SGRNA_SCAFFOLD,
+    "GAATTCTCTAGAGTCGAC"
+  )
+  ptarget_annealing <- derive_sgrna_annealing(ptarget_cassette)
   input <- list(
     genome = DNAString(genome_sequence),
     genome_reference_id = "fixture_genome",
     genome_contig = "fixture_genome",
     target_plasmid_sequence = DNAString(paste0(
       "GGGACTAGT",
-      "GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCT",
-      "CCCC",
-      reverse_complement_string("AGTTGACGCTAAAAAAAGCACCGACTCGGTGCC"),
-      "CTGCAGAAAA"
+      ptarget_cassette,
+      "CTGCAG",
+      strrep("A", 100L)
     )),
     target_plasmid_name = "fixture_pTarget",
     parameters = list(
@@ -226,6 +231,13 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
       n20_arm_min_distance = 40L,
       site1 = "ACTAGT",
       site2 = "CTGCAG",
+      ptarget_cassette_arc = "shortest",
+      ptarget_cassette_length = nchar(ptarget_cassette),
+      ptarget_original_n20 = ptarget_annealing$original_n20,
+      sgrna_scaffold = ptarget_annealing$scaffold,
+      sgrna_forward_annealing = ptarget_annealing$forward,
+      sgrna_reverse_annealing = ptarget_annealing$reverse,
+      sgrna_annealing_temp_c = 60,
       primer3_buffer = primer3_buffer_parameters(),
       primer_qc = list(max_product_size = 2000L)
     ),
@@ -268,7 +280,7 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
       write_design_outputs(input, feature, selected, arms, "cds", target_dir, log_path),
       error = identity
     )
-    assert_true(inherits(failed, "error") && grepl("sgRNA PCR", conditionMessage(failed)),
+    assert_true(inherits(failed, "error") && grepl("sgRNA|pTarget", conditionMessage(failed)),
                 "The first attempt must fail after screening QC")
     assert_true(!any(bind_rows(trace$ranking)$selected),
                 "A rejected output attempt still marks its pairs as final")
@@ -444,6 +456,14 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
         nchar(result$wet_lab$pcr_products$sequence)
       ),
     "The complete PCR-product set was not modelled"
+  )
+  sgrna_product <- result$wet_lab$pcr_products$sequence[
+    result$wet_lab$pcr_products$name == "sgRNA_N20_1"
+  ]
+  assert_true(
+    length(sgrna_product) == 1L &&
+      endsWith(sgrna_product, SGRNA_PRODUCT_OVERLAP),
+    "sgRNA PCR product lacks the reverse-primer assembly tail"
   )
   screening_products <- result$wet_lab$pcr_products[
     startsWith(result$wet_lab$pcr_products$name, "screening_"),

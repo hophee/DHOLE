@@ -17,6 +17,10 @@
 !/test/test_screening_fixture.R
 !/test/test_regressions.R
 
+# Private/local target-plasmid inputs
+pTarget*.fasta
+ptarget*.fasta
+
 # Local technical specifications and dated archives
 /TECHNICAL_SPECIFICATION.md
 /old_descriptions/

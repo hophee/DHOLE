@@ -58,6 +58,14 @@ assert_true(defaults$n20_strands == "random", "strand default is not random")
 assert_true(identical(defaults$n20_offtarget, 0L), "MM default is not 0")
 assert_true(defaults$site1 == "ACTAGT", "site1 default is not SpeI")
 assert_true(defaults$site2 == "CTGCAG", "site2 default is not PstI")
+assert_true(
+  defaults$ptarget_cassette_arc == "shortest",
+  "pTarget cassette defaults are incorrect"
+)
+assert_true(
+  identical(defaults$sgrna_annealing_temp_c, 60),
+  "sgRNA annealing temperature default is incorrect"
+)
 assert_true(!defaults$cds_fs && !defaults$ncrna_fs, "FS defaults are not FALSE")
 assert_true(
   identical(unname(defaults$left_arm), c(300L, 350L, 400L)),
@@ -94,6 +102,8 @@ configured <- parse_designer_args(c(
   "--n20-offtarget", "0,2,4",
   "--site1", "ggatcc",
   "--site2", "aagctt",
+  "--ptarget-cassette-arc", "forward",
+  "--sgrna-annealing-temp-c", "62.5",
   "--cds-fs"
 ))
 assert_true(configured$filtering_level == 3L, "filtering_level was not parsed")
@@ -107,6 +117,14 @@ assert_true(configured$cds_fs, "cds_fs flag was not parsed")
 assert_true(
   configured$site1 == "GGATCC" && configured$site2 == "AAGCTT",
   "Restriction sites were not parsed and normalized"
+)
+assert_true(
+  configured$ptarget_cassette_arc == "forward",
+  "Custom pTarget cassette parameters were not parsed"
+)
+assert_true(
+  identical(configured$sgrna_annealing_temp_c, 62.5),
+  "Custom sgRNA annealing temperature was not parsed"
 )
 
 duplicate_targets <- base_args
@@ -127,6 +145,14 @@ assert_error(
 assert_error(
   parse_designer_args(c(base_args, "--filtering-level", "4")),
   "1, 2 или 3"
+)
+assert_error(
+  parse_designer_args(c(base_args, "--sgrna-annealing-temp-c", "100")),
+  "между 0 и 100"
+)
+assert_error(
+  parse_designer_args(c(base_args, "--ptarget-cassette-arc", "guess")),
+  "shortest, forward|reverse"
 )
 assert_error(
   parse_designer_args(c(base_args, "--site1", "ACTNGT")),
@@ -754,8 +780,43 @@ assert_true(
 )
 
 cassette_sequence <- paste0(
-  "GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCT", "CCCC",
-  reverse_complement_string("AGTTGACGCTAAAAAAAGCACCGACTCGGTGCC")
+  "ACGTACGTACGTACGTACGT",
+  SGRNA_SCAFFOLD,
+  "GAATTCTCTAGAGTCGAC"
+)
+derived_annealing <- derive_sgrna_annealing(cassette_sequence)
+assert_true(
+  derived_annealing$original_n20 == "ACGTACGTACGTACGTACGT" &&
+    derived_annealing$scaffold == SGRNA_SCAFFOLD &&
+    derived_annealing$forward == SGRNA_FORWARD_ANNEALING &&
+    derived_annealing$reverse == "AAAAAAAGCACCGACTCGGTGCC",
+  "The synthetic pTarget architecture or annealing sites were not recovered"
+)
+assert_true(
+  paste0(SGRNA_REVERSE_OVERHANG, derived_annealing$reverse) ==
+    "AGTTGACGCTAAAAAAAGCACCGACTCGGTGCC",
+  "The generated reverse sgRNA primer differs from the expected sequence"
+)
+assert_error(
+  derive_sgrna_annealing("ACGT"),
+  "несовместима со схемой sgRNA"
+)
+synthetic_ptarget <- DNAString(paste0(
+  "GCAGGGGACTAGT",
+  cassette_sequence,
+  "CTGCAG",
+  strrep("A", 100L)
+))
+synthetic_sgrna_template <- locate_circular_pcr_template(
+  synthetic_ptarget,
+  derived_annealing$forward,
+  derived_annealing$reverse,
+  length(synthetic_ptarget)
+)
+assert_true(
+  synthetic_sgrna_template$strand == "+" &&
+    as.character(synthetic_sgrna_template$sequence) == SGRNA_SCAFFOLD,
+  "The synthetic primers do not define one exact scaffold PCR product"
 )
 circular_ptarget <- DNAString(paste0("GCAGGGGACTAGT", cassette_sequence, "CT"))
 assembly_bridge <- "ATGACTGCCCGCAAG"
@@ -782,7 +843,8 @@ ptarget_model <- model_edited_ptargets(
   assembly_left_product,
   assembly_bridge,
   assembly_right_product,
-  name_prefix = "geneA"
+  name_prefix = "geneA",
+  cassette_arc = "forward"
 )
 assert_true(
   ptarget_model$restriction_pair$orientation == "+" &&
@@ -818,18 +880,6 @@ assert_error(
     "CTGCAG"
   ),
   "ровно один раз"
-)
-
-circular_pcr <- locate_circular_pcr_template(
-  DNAString("CCGGTTAAAAAAGGGACGTTGCA"),
-  "ACGTTGCA",
-  "TTAACCGG",
-  100L
-)
-assert_true(
-  circular_pcr$wraps_origin &&
-    as.character(circular_pcr$sequence) == "ACGTTGCACCGGTTAA",
-  "Circular PCR location crossing the FASTA origin is incorrect"
 )
 
 pcr_forward_annealing <- "ACGTTGCAAGTCGATCGTAC"

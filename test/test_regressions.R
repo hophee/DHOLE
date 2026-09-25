@@ -10,19 +10,52 @@ expect_error <- function(expression, pattern, class = "error") {
         paste("Expected", class, pattern))
 }
 
-# 3, 12: the same circular molecule must retain the same backbone after RC/rotation.
-cassette <- paste0("GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCT", "CCCC",
-                   reverse_complement_string("AGTTGACGCTAAAAAAAGCACCGACTCGGTGCC"))
-plasmid <- paste0("ACTAGT", cassette, "CTGCAG", "AGTCCG")
+# 3, 12: cassette selection depends only on the restriction sites and arc length.
+cassette <- strrep("ACGT", 20L)
+backbone <- strrep("G", 120L)
+plasmid <- paste0("ACTAGT", cassette, "CTGCAG", backbone)
 for (sequence in c(plasmid, reverse_complement_string(plasmid),
                    paste0(substr(plasmid, 20L, nchar(plasmid)), substr(plasmid, 1L, 19L)))) {
   pair <- find_oriented_restriction_pair(sequence, "ACTAGT", "CTGCAG")
-  check(identical(pair$backbone, "AGTCCG"), "pTarget retained the wrong arc")
+  check(identical(pair$cassette, cassette), "pTarget selected the wrong cassette arc")
+  check(identical(pair$backbone, backbone), "pTarget retained the wrong backbone arc")
 }
-expect_error(find_oriented_restriction_pair("ACTAGTCCCCCTGCAGGGG", "ACTAGT", "CTGCAG"),
-             "sgRNA PCR")
-expect_error(find_oriented_restriction_pair(paste0("ACTAGTGGGCTGCAG", cassette),
-                                           "ACTAGT", "CTGCAG"), "не лежит между")
+minimal_pair <- find_oriented_restriction_pair(
+  paste0("ACTAGT", strrep("C", 10L), "CTGCAG", strrep("G", 40L)),
+  "ACTAGT",
+  "CTGCAG"
+)
+check(identical(minimal_pair$cassette, strrep("C", 10L)),
+      "Restriction-site validation unexpectedly imposes a cassette length")
+expect_error(
+  derive_sgrna_annealing(minimal_pair$cassette),
+  "несовместима со схемой sgRNA"
+)
+long_arc_pair <- find_oriented_restriction_pair(
+  paste0("ACTAGT", strrep("A", 40L), "CTGCAG", strrep("G", 10L)),
+  "ACTAGT",
+  "CTGCAG",
+  "forward"
+)
+check(identical(long_arc_pair$cassette, strrep("A", 40L)),
+      "Explicit cassette arc was ignored")
+custom_sites <- inspect_sgrna_ptarget(
+  paste0(
+    "GGATCC",
+    "TGCATGCATGCATGCATGCA",
+    SGRNA_SCAFFOLD,
+    "CCCGGG",
+    "AAGCTT",
+    strrep("A", 120L)
+  ),
+  "GGATCC",
+  "AAGCTT"
+)
+check(
+  custom_sites$annealing$original_n20 == "TGCATGCATGCATGCATGCA" &&
+    as.character(custom_sites$template$sequence) == SGRNA_SCAFFOLD,
+  "A compatible pTarget with custom restriction sites was rejected"
+)
 check(identical(circular_match_positions("AAAA", "AAA"), 1:4),
       "Overlapping/circular sites were missed")
 
@@ -35,13 +68,28 @@ local({
   target <- file.path(directory, "target.fasta")
   writeLines(c(">chr", strrep("ACGT", 100)), genome)
   writeLines("chr\ttest\tCDS\t10\t300\t.\t+\t0\tID=cds1;gene=test_gene", annotation)
-  writeLines(c(">target", plasmid), target)
+  compatible_plasmid <- paste0(
+    "ACTAGT",
+    "ACGTACGTACGTACGTACGT",
+    SGRNA_SCAFFOLD,
+    "GAATTCTCTAGAGTCGAC",
+    "CTGCAG",
+    backbone
+  )
+  writeLines(c(">target", compatible_plasmid), target)
   cli <- parse_designer_args(c(
     "--genome", genome, "--genome-annotation", annotation,
     "--annotation-format", "gff", "--target-plasmid", target,
     "--output-dir", directory, "--cds", "test_gene"
   ))
-  check(identical(make_design_input(cli)$tools$chopchop_python, "chopchop-python"),
+  input <- make_design_input(cli)
+  check(identical(input$parameters$sgrna_forward_annealing,
+                  SGRNA_FORWARD_ANNEALING) &&
+          identical(input$parameters$sgrna_reverse_annealing,
+                    SGRNA_REVERSE_ANNEALING) &&
+          identical(input$parameters$sgrna_scaffold, SGRNA_SCAFFOLD),
+        "sgRNA primers were not derived from the supplied pTarget architecture")
+  check(identical(input$tools$chopchop_python, "chopchop-python"),
         "Default CHOPCHOP interpreter was replaced with a nonexistent project path")
   custom_python <- file.path(directory, "custom-python")
   cli$chopchop_python <- custom_python

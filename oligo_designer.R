@@ -35,6 +35,23 @@ reverse_complement_string <- function(sequence) {
   as.character(reverseComplement(DNAString(toupper(sequence))))
 }
 
+SGRNA_GUIDE_LENGTH <- 20L
+SGRNA_SCAFFOLD <- paste0(
+  "GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCT",
+  "AGTCCGTTATCAACTTGAAAAAGT",
+  "GGCACCGAGTCGGTGCTTTTTTT"
+)
+# These scaffold-end binding arms reproduce the pTarget primers validated by
+# old_scheme; only their 5-prime guide/assembly tails vary between designs.
+SGRNA_FORWARD_ANNEALING <- substr(SGRNA_SCAFFOLD, 1L, 36L)
+SGRNA_REVERSE_ANNEALING <- reverse_complement_string(substr(
+  SGRNA_SCAFFOLD,
+  nchar(SGRNA_SCAFFOLD) - 23L + 1L,
+  nchar(SGRNA_SCAFFOLD)
+))
+SGRNA_REVERSE_OVERHANG <- "AGTTGACGCT"
+SGRNA_PRODUCT_OVERLAP <- reverse_complement_string(SGRNA_REVERSE_OVERHANG)
+
 design_bridge <- function(design_class, deleted_nt) {
   substr("ATGACTGCCCGCAAG", 1L,
          if (design_class == "cds") 15L - deleted_nt %% 3L else 15L)
@@ -42,7 +59,7 @@ design_bridge <- function(design_class, deleted_nt) {
 
 homology_primer_pair <- function(primer_row, side, bridge, site2) {
   c(
-    paste0(if (side == "left") "AGCGTCAACT" else bridge,
+    paste0(if (side == "left") SGRNA_PRODUCT_OVERLAP else bridge,
            primer_row$PRIMER_LEFT_SEQUENCE[[1]]),
     paste0(if (side == "left") reverse_complement_string(bridge) else {
       paste0("ACG", reverse_complement_string(site2))
@@ -66,10 +83,20 @@ circular_match_positions <- function(sequence, motif) {
   as.integer(unique(hits[hits > 0L & hits <= sequence_length]))
 }
 
-find_oriented_restriction_pair <- function(plasmid, site1, site2) {
+find_oriented_restriction_pair <- function(
+  plasmid,
+  site1,
+  site2,
+  cassette_arc = "shortest"
+) {
   sequence <- toupper(as.character(plasmid))
   site1 <- normalize_restriction_site(site1, "site1")
   site2 <- normalize_restriction_site(site2, "site2")
+  cassette_arc <- tolower(trimws(as.character(cassette_arc)))
+  if (length(cassette_arc) != 1L || is.na(cassette_arc) ||
+      !cassette_arc %in% c("shortest", "forward", "reverse")) {
+    stop("cassette_arc должен быть shortest, forward или reverse", call. = FALSE)
+  }
   if (site1 == site2) {
     stop("site1 и site2 должны быть разными", call. = FALSE)
   }
@@ -102,61 +129,183 @@ find_oriented_restriction_pair <- function(plasmid, site1, site2) {
 
   first <- locate_site(site1, "site1")
   second <- locate_site(site2, "site2")
-  orientations <- intersect(first$strands, second$strands)
-  if (!length(orientations)) {
+  possible_orientations <- intersect(first$strands, second$strands)
+  if (!length(possible_orientations)) {
     stop("site1 и site2 имеют несовместимую ориентацию", call. = FALSE)
   }
-  cassette <- NULL
-  if (length(orientations) > 1L) {
-    cassette <- locate_circular_pcr_template(
-      plasmid,
-      "GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCT",
-      "AGTTGACGCTAAAAAAAGCACCGACTCGGTGCC",
-      nchar(sequence)
+  make_candidate <- function(orientation) {
+    oriented <- if (orientation == "+") {
+      sequence
+    } else {
+      reverse_complement_string(sequence)
+    }
+    site1_start <- circular_match_positions(oriented, site1)
+    site2_start <- circular_match_positions(oriented, site2)
+    if (length(site1_start) != 1L || length(site2_start) != 1L) {
+      return(NULL)
+    }
+    rotated <- paste0(
+      substr(oriented, site1_start, nchar(oriented)),
+      if (site1_start > 1L) substr(oriented, 1L, site1_start - 1L) else ""
     )
-    orientation <- cassette$strand
-  } else {
-    orientation <- orientations[[1]]
-  }
-  oriented <- if (orientation == "+") {
-    sequence
-  } else {
-    reverse_complement_string(sequence)
-  }
-  site1_start <- circular_match_positions(oriented, site1)
-  site2_start <- circular_match_positions(oriented, site2)
-  if (length(site1_start) != 1L || length(site2_start) != 1L) {
-    stop("Не удалось однозначно ориентировать пару сайтов", call. = FALSE)
+    site2_rotated <- ((site2_start - site1_start) %% nchar(oriented)) + 1L
+    replaced_length <- site2_rotated + nchar(site2) - 1L
+    cassette_start <- nchar(site1) + 1L
+    cassette_end <- site2_rotated - 1L
+    if (cassette_start > cassette_end || replaced_length >= nchar(oriented)) {
+      return(NULL)
+    }
+    list(
+      backbone = substr(rotated, replaced_length + 1L, nchar(rotated)),
+      cassette = substr(rotated, cassette_start, cassette_end),
+      cassette_length = as.integer(cassette_end - cassette_start + 1L),
+      orientation = orientation,
+      site1_start = first$position,
+      site2_start = second$position
+    )
   }
 
-  rotated <- paste0(
-    substr(oriented, site1_start, nchar(oriented)),
-    if (site1_start > 1L) substr(oriented, 1L, site1_start - 1L) else ""
-  )
-  site2_rotated <- ((site2_start - site1_start) %% nchar(oriented)) + 1L
-  replaced_length <- site2_rotated + nchar(site2) - 1L
-  if (!is.null(cassette)) {
-    cassette_start <- circular_match_positions(rotated, as.character(cassette$sequence))
-    if (length(cassette_start) != 1L || cassette_start <= nchar(site1) ||
-        cassette_start + length(cassette$sequence) - 1L >= site2_rotated) {
-      stop("sgRNA-кассета не лежит между site1 и site2", call. = FALSE)
-    }
-  }
-  if (
-    site2_rotated <= nchar(site1) ||
-      replaced_length >= nchar(oriented)
-  ) {
+  candidates <- Filter(Negate(is.null), lapply(possible_orientations, make_candidate))
+  if (!length(candidates)) {
     stop(
       "Сайты рестрикции перекрываются или не оставляют pTarget backbone",
       call. = FALSE
     )
   }
+  if (cassette_arc != "shortest") {
+    requested <- if (cassette_arc == "forward") "+" else "-"
+    candidates <- Filter(function(x) x$orientation == requested, candidates)
+    if (length(candidates) != 1L) {
+      stop(
+        sprintf("Для cassette_arc=%s не найдена ориентированная пара сайтов", cassette_arc),
+        call. = FALSE
+      )
+    }
+    return(candidates[[1]])
+  }
+  lengths <- vapply(candidates, function(x) x$cassette_length, numeric(1))
+  if (sum(lengths == min(lengths)) != 1L) {
+    stop(
+      "Дуги между site1 и site2 равны; задайте cassette_arc=forward или reverse",
+      call. = FALSE
+    )
+  }
+  candidates[[which.min(lengths)]]
+}
+
+derive_sgrna_annealing <- function(cassette) {
+  cassette <- toupper(as.character(cassette))
+  if (length(cassette) != 1L || !nzchar(cassette) ||
+      !grepl("^[ACGT]+$", cassette)) {
+    stop("Кассета pTarget должна содержать только A/C/G/T", call. = FALSE)
+  }
+  scaffold_start <- SGRNA_GUIDE_LENGTH + 1L
+  scaffold_end <- SGRNA_GUIDE_LENGTH + nchar(SGRNA_SCAFFOLD)
+  if (nchar(cassette) < scaffold_end ||
+      substr(cassette, scaffold_start, scaffold_end) != SGRNA_SCAFFOLD) {
+    stop(
+      paste(
+        "pTarget несовместима со схемой sgRNA:",
+        "сразу после site1 ожидаются N20 и стандартный SpCas9 scaffold"
+      ),
+      call. = FALSE
+    )
+  }
   list(
-    backbone = substr(rotated, replaced_length + 1L, nchar(rotated)),
-    orientation = orientation,
-    site1_start = first$position,
-    site2_start = second$position
+    original_n20 = substr(cassette, 1L, SGRNA_GUIDE_LENGTH),
+    scaffold = SGRNA_SCAFFOLD,
+    forward = SGRNA_FORWARD_ANNEALING,
+    reverse = SGRNA_REVERSE_ANNEALING
   )
+}
+
+locate_circular_pcr_template <- function(
+  plasmid,
+  forward_annealing,
+  reverse_annealing,
+  max_product_size
+) {
+  sequence <- toupper(as.character(plasmid))
+  forward_annealing <- toupper(as.character(forward_annealing))
+  reverse_binding <- reverse_complement_string(reverse_annealing)
+  sequence_length <- nchar(sequence)
+  candidates <- list()
+  for (strand in c("+", "-")) {
+    oriented <- if (strand == "+") sequence else {
+      reverse_complement_string(sequence)
+    }
+    forward_starts <- circular_match_positions(oriented, forward_annealing)
+    reverse_starts <- circular_match_positions(oriented, reverse_binding)
+    for (forward_start in forward_starts) {
+      for (reverse_start in reverse_starts) {
+        offset <- (reverse_start - forward_start) %% sequence_length
+        product_length <- offset + nchar(reverse_binding)
+        if (offset < nchar(forward_annealing) ||
+            product_length > max_product_size ||
+            product_length > sequence_length) {
+          next
+        }
+        oriented_end <- ((forward_start + product_length - 2L) %%
+          sequence_length) + 1L
+        candidates[[length(candidates) + 1L]] <- list(
+          sequence = DNAString(substr(
+            paste0(oriented, oriented),
+            forward_start,
+            forward_start + product_length - 1L
+          )),
+          start = if (strand == "+") {
+            forward_start
+          } else sequence_length - forward_start + 1L,
+          end = if (strand == "+") {
+            oriented_end
+          } else sequence_length - oriented_end + 1L,
+          strand = strand,
+          wraps_origin = oriented_end < forward_start
+        )
+      }
+    }
+  }
+  if (length(candidates) != 1L) {
+    stop(
+      sprintf(
+        paste(
+          "Ожидался один sgRNA PCR-продукт на кольцевой pTarget;",
+          "найдено: %d"
+        ),
+        length(candidates)
+      ),
+      call. = FALSE
+    )
+  }
+  candidates[[1]]
+}
+
+inspect_sgrna_ptarget <- function(
+  plasmid,
+  site1,
+  site2,
+  cassette_arc = "shortest",
+  max_product_size = nchar(as.character(plasmid))
+) {
+  pair <- find_oriented_restriction_pair(plasmid, site1, site2, cassette_arc)
+  annealing <- derive_sgrna_annealing(pair$cassette)
+  template <- locate_circular_pcr_template(
+    plasmid,
+    annealing$forward,
+    annealing$reverse,
+    max_product_size
+  )
+  if (template$strand != pair$orientation ||
+      as.character(template$sequence) != annealing$scaffold) {
+    stop(
+      paste(
+        "pTarget несовместима со схемой sgRNA:",
+        "участки отжига не ограничивают ожидаемый SpCas9 scaffold"
+      ),
+      call. = FALSE
+    )
+  }
+  list(pair = pair, annealing = annealing, template = template)
 }
 
 model_edited_ptargets <- function(
@@ -167,14 +316,15 @@ model_edited_ptargets <- function(
   right_arm_product,
   site1 = "ACTAGT",
   site2 = "CTGCAG",
-  name_prefix = "pTarget"
+  name_prefix = "pTarget",
+  cassette_arc = "shortest"
 ) {
   site1 <- normalize_restriction_site(site1, "site1")
   site2 <- normalize_restriction_site(site2, "site2")
   sgrna_products <- toupper(as.character(sgrna_products))
   left_arm_product <- toupper(as.character(left_arm_product))
   right_arm_product <- toupper(as.character(right_arm_product))
-  left_overlap <- "AGCGTCAACT"
+  left_overlap <- SGRNA_PRODUCT_OVERLAP
   if (
     !length(sgrna_products) ||
       length(left_arm_product) != 1L ||
@@ -186,7 +336,12 @@ model_edited_ptargets <- function(
   ) {
     stop("PCR-продукты не содержат ожидаемые перекрытия сборки", call. = FALSE)
   }
-  pair <- find_oriented_restriction_pair(plasmid, site1, site2)
+  pair <- find_oriented_restriction_pair(
+    plasmid,
+    site1,
+    site2,
+    cassette_arc
+  )
   assembled <- paste0(
     sgrna_products,
     substr(left_arm_product, nchar(left_overlap) + 1L, nchar(left_arm_product)),
@@ -202,72 +357,6 @@ model_edited_ptargets <- function(
   edited <- DNAStringSet(paste0(inserts, pair$backbone))
   names(edited) <- paste0(name_prefix, "_pTarget_N20_", seq_along(edited))
   list(sequences = edited, restriction_pair = pair)
-}
-
-locate_circular_pcr_template <- function(
-  plasmid,
-  forward_primer,
-  reverse_primer,
-  max_product_size
-) {
-  sequence <- toupper(as.character(plasmid))
-  forward_primer <- toupper(as.character(forward_primer))
-  reverse_binding <- reverse_complement_string(reverse_primer)
-  sequence_length <- nchar(sequence)
-  candidates <- list()
-  for (strand in c("+", "-")) {
-    oriented <- if (strand == "+") sequence else {
-      reverse_complement_string(sequence)
-    }
-    forward_starts <- circular_match_positions(oriented, forward_primer)
-    reverse_starts <- circular_match_positions(oriented, reverse_binding)
-    for (forward_start in forward_starts) {
-      for (reverse_start in reverse_starts) {
-        offset <- (reverse_start - forward_start) %% sequence_length
-        product_length <- offset + nchar(reverse_binding)
-        if (
-          offset < nchar(forward_primer) ||
-            product_length > max_product_size ||
-            product_length > sequence_length
-        ) {
-          next
-        }
-        oriented_end <- ((forward_start + product_length - 2L) %%
-          sequence_length) + 1L
-        original_start <- if (strand == "+") {
-          forward_start
-        } else {
-          sequence_length - forward_start + 1L
-        }
-        original_end <- if (strand == "+") {
-          oriented_end
-        } else {
-          sequence_length - oriented_end + 1L
-        }
-        candidates[[length(candidates) + 1L]] <- list(
-          sequence = DNAString(substr(
-            paste0(oriented, oriented),
-            forward_start,
-            forward_start + product_length - 1L
-          )),
-          start = original_start,
-          end = original_end,
-          strand = strand,
-          wraps_origin = oriented_end < forward_start
-        )
-      }
-    }
-  }
-  if (length(candidates) != 1L) {
-    stop(
-      sprintf(
-        "Ожидался один sgRNA PCR-продукт на кольцевой pTarget; найдено: %d",
-        length(candidates)
-      ),
-      call. = FALSE
-    )
-  }
-  candidates[[1]]
 }
 
 simulate_full_primer_pcr <- function(
@@ -381,27 +470,36 @@ model_design_pcr_products <- function(
 ) {
   max_product_size <- input$parameters$primer_qc$max_product_size
   buffer <- input$parameters$primer3_buffer
-  sgrna_annealing <- substr(
-    as.character(sgrnas[[1]]),
-    3L + nchar(input$parameters$site1) + 20L + 1L,
-    length(sgrnas[[1]])
-  )
-  ptarget_template <- locate_circular_pcr_template(
+  ptarget <- inspect_sgrna_ptarget(
     input$target_plasmid_sequence,
-    sgrna_annealing,
-    as.character(sgrna_reverse[[1]]),
+    input$parameters$site1,
+    input$parameters$site2,
+    input$parameters$ptarget_cassette_arc,
     max_product_size
   )
+  sgrna_template <- as.character(ptarget$template$sequence)
+  if (nchar(sgrna_template) > max_product_size) {
+    stop(
+      sprintf(
+        "sgRNA PCR-продукт (%d bp) превышает --primer-max-product-size=%d",
+        nchar(sgrna_template),
+        max_product_size
+      ),
+      call. = FALSE
+    )
+  }
   ptarget_location <- paste0(
     input$target_plasmid_name %||% "pTarget",
     ":",
-    ptarget_template$start,
+    ptarget$template$start,
     "->",
-    ptarget_template$end,
+    ptarget$template$end,
     " (",
-    ptarget_template$strand,
+    ptarget$template$strand,
     ", circular",
-    if (ptarget_template$wraps_origin) ", crosses FASTA origin" else "",
+    if (ptarget$template$wraps_origin) {
+      ", crosses FASTA origin"
+    } else "",
     ")"
   )
   rows <- lapply(seq_along(sgrnas), function(i) {
@@ -409,14 +507,14 @@ model_design_pcr_products <- function(
       paste0("sgRNA_N20_", i),
       paste0("ПЦР sgRNA-кассеты для N20_", i),
       ptarget_location,
-      ptarget_template$sequence,
+      sgrna_template,
       names(sgrnas)[[i]],
       names(sgrna_reverse)[[1]],
       sgrnas[[i]],
       sgrna_reverse[[1]],
-      sgrna_annealing,
-      sgrna_reverse[[1]],
-      60,
+      ptarget$annealing$forward,
+      ptarget$annealing$reverse,
+      input$parameters$sgrna_annealing_temp_c,
       buffer,
       max_product_size
     )
@@ -626,6 +724,19 @@ parse_designer_args <- function(args) {
     "--site2",
     help = "Second restriction-site sequence in insert orientation",
     default = "CTGCAG"
+  )
+  parser <- add_argument(
+    parser,
+    "--ptarget-cassette-arc",
+    help = "pTarget cassette arc: shortest, forward, or reverse",
+    default = "shortest"
+  )
+  parser <- add_argument(
+    parser,
+    "--sgrna-annealing-temp-c",
+    help = "Annealing temperature for the sgRNA-cassette PCR",
+    default = 60,
+    type = "double"
   )
   parser <- add_argument(
     parser,
@@ -900,6 +1011,28 @@ parse_designer_args <- function(args) {
   ) {
     stop("--filtering-level должен быть равен 1, 2 или 3", call. = FALSE)
   }
+  sgrna_annealing_temp_c <- as.numeric(parsed$sgrna_annealing_temp_c)
+  if (
+    length(sgrna_annealing_temp_c) != 1L ||
+      !is.finite(sgrna_annealing_temp_c) ||
+      sgrna_annealing_temp_c <= 0 ||
+      sgrna_annealing_temp_c >= 100
+  ) {
+    stop(
+      "--sgrna-annealing-temp-c должен быть между 0 и 100",
+      call. = FALSE
+    )
+  }
+  ptarget_cassette_arc <- tolower(normalize_scalar(parsed$ptarget_cassette_arc))
+  if (
+    length(ptarget_cassette_arc) != 1L ||
+      !ptarget_cassette_arc %in% c("shortest", "forward", "reverse")
+  ) {
+    stop(
+      "--ptarget-cassette-arc должен быть shortest, forward или reverse",
+      call. = FALSE
+    )
+  }
   left_arm <- validate_arm_lengths(
     "левого",
     parsed$left_arm_min,
@@ -949,6 +1082,8 @@ parse_designer_args <- function(args) {
     target_plasmid = normalize_scalar(parsed$target_plasmid),
     site1 = normalize_restriction_site(parsed$site1, "--site1"),
     site2 = normalize_restriction_site(parsed$site2, "--site2"),
+    ptarget_cassette_arc = ptarget_cassette_arc,
+    sgrna_annealing_temp_c = sgrna_annealing_temp_c,
     output_dir = normalize_scalar(parsed$output_dir),
     cds = normalize_targets(parsed$cds),
     ncrna = normalize_targets(parsed$ncrna),
@@ -2291,6 +2426,16 @@ write_run_parameters <- function(input, targets, path) {
     target_plasmid_file = input$target_plasmid,
     ptarget_site1 = input$parameters$site1,
     ptarget_site2 = input$parameters$site2,
+    ptarget_cassette_arc = input$parameters$ptarget_cassette_arc,
+    ptarget_cassette_length_bp = input$parameters$ptarget_cassette_length,
+    ptarget_original_n20 = input$parameters$ptarget_original_n20,
+    ptarget_sgrna_scaffold = input$parameters$sgrna_scaffold,
+    ptarget_sgrna_forward_annealing =
+      input$parameters$sgrna_forward_annealing,
+    ptarget_sgrna_reverse_annealing =
+      input$parameters$sgrna_reverse_annealing,
+    ptarget_sgrna_annealing_temp_c =
+      input$parameters$sgrna_annealing_temp_c,
     cas_plasmid_file = if (is.null(input$cas_plasmid)) NA_character_ else {
       input$cas_plasmid
     },
@@ -2408,10 +2553,12 @@ make_design_input <- function(cli) {
       call. = FALSE
     )
   }
-  find_oriented_restriction_pair(
+  ptarget <- inspect_sgrna_ptarget(
     references$sequence[[target_records[[1]]]],
     cli$site1,
-    cli$site2
+    cli$site2,
+    cli$ptarget_cassette_arc,
+    cli$primer_qc$max_product_size
   )
   input <- list(
     genome_path = cli$genome[[1]],
@@ -2441,6 +2588,13 @@ make_design_input <- function(cli) {
       n20_offtarget = cli$n20_offtarget,
       site1 = cli$site1,
       site2 = cli$site2,
+      ptarget_cassette_arc = cli$ptarget_cassette_arc,
+      ptarget_cassette_length = ptarget$pair$cassette_length,
+      ptarget_original_n20 = ptarget$annealing$original_n20,
+      sgrna_scaffold = ptarget$annealing$scaffold,
+      sgrna_forward_annealing = ptarget$annealing$forward,
+      sgrna_reverse_annealing = ptarget$annealing$reverse,
+      sgrna_annealing_temp_c = cli$sgrna_annealing_temp_c,
       cds_fs = cli$cds_fs,
       ncrna_fs = cli$ncrna_fs,
       left_arm = cli$left_arm,
@@ -4340,7 +4494,7 @@ write_design_outputs <- function(
     "ACG",
     input$parameters$site1,
     substr(selected$table$target_sequence, 1, 20),
-    "GTTTTAGAGCTAGAAATAGCAAGTTaaaataaggct"
+    input$parameters$sgrna_forward_annealing
   ))
   names(sgrnas) <- paste0(feature$display_name, "_sgF", seq_along(sgrnas))
   arm_primers <- DNAStringSet(c(
@@ -4351,7 +4505,10 @@ write_design_outputs <- function(
     feature$display_name,
     c("_LF", "_LR", "_RF", "_RR")
   )
-  sgrna_reverse <- DNAStringSet("AGTTGACGCTAAAAAAAGCACCGACTCGGTGCC")
+  sgrna_reverse <- DNAStringSet(paste0(
+    SGRNA_REVERSE_OVERHANG,
+    input$parameters$sgrna_reverse_annealing
+  ))
   names(sgrna_reverse) <- paste0(feature$display_name, "_sgR")
   all_primers <- c(sgrnas, sgrna_reverse, arm_primers)
   writeXStringSet(all_primers, file.path(target_dir, "all_primers.fasta"))
@@ -4539,7 +4696,8 @@ write_design_outputs <- function(
     pcr_products$sequence[pcr_products$name == "right_homology_arm"],
     input$parameters$site1,
     input$parameters$site2,
-    feature$display_name
+    feature$display_name,
+    input$parameters$ptarget_cassette_arc
   )
   writeXStringSet(
     edited_ptargets$sequences,
@@ -4682,6 +4840,41 @@ write_design_outputs <- function(
       paste("n20_count", nrow(selected$table), sep = "\t"),
       paste("ptarget_site1", input$parameters$site1, sep = "\t"),
       paste("ptarget_site2", input$parameters$site2, sep = "\t"),
+      paste(
+        "ptarget_cassette_arc",
+        input$parameters$ptarget_cassette_arc,
+        sep = "\t"
+      ),
+      paste(
+        "ptarget_cassette_length_bp",
+        input$parameters$ptarget_cassette_length,
+        sep = "\t"
+      ),
+      paste(
+        "ptarget_original_n20",
+        input$parameters$ptarget_original_n20,
+        sep = "\t"
+      ),
+      paste(
+        "ptarget_sgrna_scaffold",
+        input$parameters$sgrna_scaffold,
+        sep = "\t"
+      ),
+      paste(
+        "ptarget_sgrna_forward_annealing",
+        input$parameters$sgrna_forward_annealing,
+        sep = "\t"
+      ),
+      paste(
+        "ptarget_sgrna_reverse_annealing",
+        input$parameters$sgrna_reverse_annealing,
+        sep = "\t"
+      ),
+      paste(
+        "ptarget_sgrna_annealing_temp_c",
+        input$parameters$sgrna_annealing_temp_c,
+        sep = "\t"
+      ),
       paste(
         "ptarget_site_pair_orientation",
         edited_ptargets$restriction_pair$orientation,
