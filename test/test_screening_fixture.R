@@ -220,7 +220,7 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
       "GGGACTAGT",
       ptarget_cassette,
       "CTGCAG",
-      strrep("A", 100L)
+      strrep("A", 200L)
     )),
     target_plasmid_name = "fixture_pTarget",
     parameters = list(

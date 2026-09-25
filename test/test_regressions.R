@@ -59,6 +59,32 @@ check(
 check(identical(circular_match_positions("AAAA", "AAA"), 1:4),
       "Overlapping/circular sites were missed")
 
+# Bakta GFF3 files may include an embedded FASTA section after the features.
+local({
+  path <- tempfile(fileext = ".gff3")
+  on.exit(unlink(path))
+  writeLines(c(
+    "##gff-version 3",
+    paste(
+      "contig_1", "Bakta", "CDS", 1, 12, ".", "+", 0,
+      "ID=cds1;locus_tag=LOC1;gene=test_gene",
+      sep = "\t"
+    ),
+    "##FASTA",
+    ">contig_1",
+    "ACGTACGTACGT"
+  ), path)
+  annotation <- read_genome_annotation(path, "gff")
+  check(
+    nrow(annotation) == 1L &&
+      annotation$gene[[1]] == "test_gene" &&
+      annotation$locus_tag[[1]] == "LOC1" &&
+      annotation$start[[1]] == 1 &&
+      annotation$stop[[1]] == 12,
+    "Embedded FASTA was not excluded from Bakta GFF3 parsing"
+  )
+})
+
 # The installed CHOPCHOP interpreter is a PATH command, not a project file.
 local({
   directory <- tempfile(); dir.create(directory)

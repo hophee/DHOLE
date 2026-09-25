@@ -627,7 +627,18 @@ read_genome_annotation <- function(path, format = "bakta") {
     annotation <- read_tsv(path, skip = skip_lines, show_col_types = FALSE) |>
       janitor::clean_names()
   } else if (format == "gff") {
-    gff <- ape::read.gff(path)
+    gff_path <- path
+    gff_lines <- readLines(path, warn = FALSE)
+    fasta_marker <- grep("^##FASTA([[:space:]]|$)", gff_lines)
+    if (length(fasta_marker)) {
+      gff_path <- tempfile(fileext = ".gff3")
+      on.exit(unlink(gff_path), add = TRUE)
+      writeLines(
+        gff_lines[seq_len(fasta_marker[[1]] - 1L)],
+        gff_path
+      )
+    }
+    gff <- ape::read.gff(gff_path)
     required <- c("seqid", "type", "start", "end", "strand", "attributes")
     missing <- setdiff(required, names(gff))
     if (length(missing)) {
