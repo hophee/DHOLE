@@ -12,7 +12,7 @@ expect_error <- function(expression, pattern, class = "error") {
 
 # 3, 12: cassette selection depends only on the restriction sites and arc length.
 cassette <- strrep("ACGT", 20L)
-backbone <- strrep("G", 120L)
+backbone <- strrep("G", 200L)
 plasmid <- paste0("ACTAGT", cassette, "CTGCAG", backbone)
 for (sequence in c(plasmid, reverse_complement_string(plasmid),
                    paste0(substr(plasmid, 20L, nchar(plasmid)), substr(plasmid, 1L, 19L)))) {
