@@ -1,6 +1,6 @@
-# 2PAC
+# DHOLE
 
-2PAC designs CRISPR-Cas9 N20 oligos, homology-arm PCR primers, screening
+DHOLE designs CRISPR-Cas9 N20 oligos, homology-arm PCR primers, screening
 primers, and an edited-genome model for bacterial CDS and ncRNA targets.
 
 Primer selection is candidate-based: Primer3 proposes up to ten pairs per

@@ -5453,6 +5453,7 @@ register_parallel_backend <- function(threads) {
 
 main <- function(args = commandArgs(trailingOnly = TRUE)) {
   cli <- parse_designer_args(args)
+  configure_openprimer_environment()
   cluster <- register_parallel_backend(cli$threads)
   if (!is.null(cluster)) {
     on.exit({
@@ -5462,7 +5463,6 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
   message(sprintf("[parallel] backend=%s workers=%d",
                   foreach::getDoParName(), foreach::getDoParWorkers()))
-  configure_openprimer_environment()
   input <- make_design_input(cli)
   message(sprintf(
     "[QC] filtering_level=%d (%s)",

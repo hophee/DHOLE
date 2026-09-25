@@ -1187,15 +1187,21 @@ assert_true(all(c("PRIMER_MIN_TM=54", "PRIMER_MAX_TM=66", "PRIMER_MIN_GC=25",
   "PRIMER_MAX_GC=75", "PRIMER_MAX_SIZE=28", "PRIMER_PAIR_MAX_DIFF_TM=9",
   "PRIMER_NUM_RETURN=11") %in% readLines(settings_path)), "Custom settings were lost")
 
-# Exercise main's real backend and its error cleanup in a separate R process.
+# Exercise main's real backend, inherited environment, and error cleanup.
 local({
   script <- tempfile(fileext = ".R")
   on.exit(unlink(script))
   writeLines(c(
     'source("oligo_designer.R")',
-    'configure_openprimer_environment <- function() NULL',
+    'configure_openprimer_environment <- function() {',
+    '  Sys.setenv(UNAFOLDDAT = "configured-before-cluster")',
+    '}',
     'make_design_input <- function(cli) {',
     '  stopifnot(foreach::getDoParWorkers() == 2L)',
+    '  worker_env <- foreach::`%dopar%`(',
+    '    foreach::foreach(i = 1:2), Sys.getenv("UNAFOLDDAT"))',
+    '  stopifnot(identical(unname(unlist(worker_env)),',
+    '                      rep("configured-before-cluster", 2)))',
     '  result <- foreach::`%dopar%`(foreach::foreach(i = 1:2), Sys.getpid())',
     '  stopifnot(all(unlist(result) != Sys.getpid()))',
     '  stop("backend_verified")',
