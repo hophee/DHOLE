@@ -207,6 +207,8 @@ packages <- c(
   "cran::ape",
   "cran::janitor",
   "cran::digest",
+  "cran::foreach",
+  "cran::doParallel",
 
   "bioc::Biostrings@2.78.0",
   "bioc::DECIPHER@3.6.0",
@@ -281,6 +283,8 @@ verify_primer_qc_dependencies() {
       "ape",
       "janitor",
       "digest",
+      "foreach",
+      "doParallel",
       "Biostrings",
       "DECIPHER",
       "openPrimeR",

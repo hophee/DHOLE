@@ -8,7 +8,7 @@ assert_true <- function(value, message) {
   }
 }
 
-test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
+test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slack = 200L) {
   target_dir <- tempfile("2pac-screening-fixture-")
   dir.create(target_dir)
   on.exit(unlink(target_dir, recursive = TRUE), add = TRUE)
@@ -30,7 +30,10 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
 
   assign(
     "callPrimer3",
-    function(...) {
+    function(seq, size_range, Tm, Tm_diff, name, primer_num, ...) {
+      assert_true(size_range == (if (slack == 200L) "1150-1350" else "1-1350") && nchar(seq) == 1350L &&
+        identical(Tm, c(55, 60, 65)) && Tm_diff == 8 && primer_num == 10L,
+        "Screening generation parameters or clipped product range are incorrect")
       data.frame(
         PRIMER_LEFT_SEQUENCE = c("ACGTCGATCGTAGCTACGTA", "GCTAGTCGATGCTACGTAGC"),
         PRIMER_RIGHT_SEQUENCE = c("TGCATCGATGCTAGTCGTAC", "CGTACGATCGTAGCATCGAC"),
@@ -238,6 +241,8 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
       sgrna_forward_annealing = ptarget_annealing$forward,
       sgrna_reverse_annealing = ptarget_annealing$reverse,
       sgrna_annealing_temp_c = 60,
+      threads = 1L, primer3_generation = utils::modifyList(
+        primer3_generation_defaults(), list(screening_product_slack = slack)),
       primer3_buffer = primer3_buffer_parameters(),
       primer_qc = list(max_product_size = 2000L)
     ),
@@ -535,6 +540,6 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE) {
 test_screening_fixture("+")
 test_screening_fixture("-")
 test_screening_fixture("+", retry = TRUE)
-test_screening_fixture("+", fallback = TRUE)
+test_screening_fixture("+", fallback = TRUE, slack = 2000L)
 
 message("Screening integration fixture passed")

@@ -205,11 +205,32 @@ local({
                 parameters = list(left_arm = c(min = 30L, opt = 30L, max = 30L),
                                   right_arm = c(min = 40L, opt = 40L, max = 40L),
                                   n20_arm_min_distance = 40L, cds_fs = FALSE,
-                                  primer3_buffer = primer3_buffer_parameters(), site2 = "CTGCAG"))
+                                  threads = 1L, primer3_generation = primer3_generation_defaults(),
+      primer3_buffer = primer3_buffer_parameters(), site2 = "CTGCAG"))
   expect_error(design_homology_arms(input, list(start = 1001L, end = 1300L,
                length = 300L, strand = "+"), list(n20_range = c(1130L, 1149L)),
                "cds", directory), "reached_valid_geometry")
   check(calls == 4L, "Short CDS did not reach the second geometry at fixed arm lengths")
+  assign("evaluate_candidate_reaction", function(...) list(
+    passed = TRUE, rejection_reason = "", risk_warnings = "QC fallback",
+    specificity = list(passed = TRUE, n_expected_products = 1,
+      n_high_risk_offtarget_products = 0, n_all_offtarget_products = 0,
+      n_perfect_3p_offtarget_sites = 0),
+    openprimer = list(passed = FALSE, failed_soft_constraints = 1L,
+      penalty = 1, max_dimer_risk = 0, abs_tm_diff = 0),
+    policy = list(strict_passed = FALSE, blocking_passed = TRUE)
+  ), .GlobalEnv)
+  input$parameters$filtering_level <- 1L
+  calls <- 0L
+  lite <- design_homology_arms(input, list(start = 1001L, end = 1300L,
+    length = 300L, strand = "+"), list(n20_range = c(1130L, 1149L)), "cds", directory)
+  check(!is.null(lite) && calls == 4L,
+        "Lite must return the first structurally valid fallback without more attempts")
+  input$parameters$filtering_level <- 2L
+  calls <- 0L
+  default <- design_homology_arms(input, list(start = 1001L, end = 1300L,
+    length = 300L, strand = "+"), list(n20_range = c(1130L, 1149L)), "cds", directory)
+  check(!is.null(default) && calls > 4L, "Default must continue searching after fallback")
   assign("callPrimer3", function(...) data.frame(), .GlobalEnv)
   check(is.null(design_homology_arms(input, list(start = 1001L, end = 1300L,
              length = 300L, strand = "+"), list(n20_range = c(1130L, 1149L)),

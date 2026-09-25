@@ -723,12 +723,12 @@ assert_true(
   all(c(
     "PRIMER_MIN_SIZE=18",
     "PRIMER_OPT_SIZE=21",
-    "PRIMER_MAX_SIZE=22",
-    "PRIMER_MAX_POLY_X=4",
-    "PRIMER_PAIR_MAX_DIFF_TM=5.0",
-    "PRIMER_GC_CLAMP=1"
+    "PRIMER_MAX_SIZE=27",
+    "PRIMER_MAX_POLY_X=5",
+    "PRIMER_PAIR_MAX_DIFF_TM=8",
+    "PRIMER_GC_CLAMP=0"
   ) %in% settings_text),
-  "Primer3 generation limits do not match high-stringency QC"
+  "Primer3 generation defaults are incorrect"
 )
 
 screening_sizes <- calculate_screening_product_sizes(
@@ -1139,5 +1139,97 @@ assert_true(
   length(trace_lines) == 2L && grepl("line one line two", trace_lines[[2]]),
   "Multiline openPrimeR metrics break the TSV row contract"
 )
+
+# Generation settings are independent of QC and retain typed CLI values.
+assert_true(defaults$threads == 1L &&
+  identical(defaults$primer3_generation, primer3_generation_defaults()),
+  "Generation/worker defaults are incorrect")
+assert_true(identical(unlist(defaults$primer3_generation), c(
+  min_size = 18, opt_size = 21, max_size = 27, min_tm = 55, opt_tm = 60,
+  max_tm = 65, max_tm_diff = 8, min_gc = 30, max_gc = 70, gc_clamp = 0,
+  max_poly_x = 5, max_self_any = 12, max_self_end = 8, pair_max_compl_any = 12,
+  pair_max_compl_end = 8, num_return = 10, screening_flank = 250,
+  screening_product_slack = 200, screening_num_return = 10
+)), "Primer3 default values changed")
+custom_options <- c(
+  "--threads" = 2, "--primer3-min-size" = 19, "--primer3-opt-size" = 22,
+  "--primer3-max-size" = 28, "--primer3-min-tm" = 54,
+  "--primer3-opt-tm" = 59, "--primer3-max-tm" = 66,
+  "--primer3-max-tm-diff" = 9, "--primer3-min-gc" = 25,
+  "--primer3-max-gc" = 75, "--primer3-gc-clamp" = 2,
+  "--primer3-max-poly-x" = 6, "--primer3-num-return" = 11,
+  "--screening-flank" = 300, "--screening-product-slack" = 220,
+  "--screening-num-return" = 12, "--primer-expected-coordinate-tolerance" = 3,
+  "--primer-expected-size-tolerance" = 4, "--primer-hard-max-tm-diff" = 4.5
+)
+custom <- parse_designer_args(c(base_args, as.vector(rbind(names(custom_options), custom_options))))
+for (option in names(custom_options)) {
+  key <- gsub("-", "_", substring(option, 3L))
+  actual <- if (key == "threads") custom$threads else if (startsWith(key, "primer_")) {
+    custom$primer_qc[[sub("^primer_", "", key)]]
+  } else custom$primer3_generation[[sub("^primer3_", "", key)]]
+  assert_true(actual == custom_options[[option]], paste("CLI lost", option))
+}
+for (case in list(
+  c("--threads", "0"), c("--threads", "1.5"), c("--primer3-min-size", "23"),
+  c("--primer3-opt-size", "28"), c("--primer3-min-tm", "61"),
+  c("--primer3-opt-tm", "66"), c("--primer3-max-tm", "100"),
+  c("--primer3-min-gc", "71"), c("--primer3-max-gc", "101"),
+  c("--primer3-max-tm-diff", "-1"), c("--primer3-gc-clamp", "28"),
+  c("--primer3-max-poly-x", "0"), c("--primer3-num-return", "0"),
+  c("--screening-flank", "0"), c("--screening-product-slack", "0"),
+  c("--screening-num-return", "0"), c("--primer-expected-coordinate-tolerance", "-1"),
+  c("--primer-expected-size-tolerance", "-1"), c("--primer-hard-max-tm-diff", "-1"),
+  c("--primer3-min-tm", "NaN"), c("--screening-flank", "Inf")
+)) assert_error(parse_designer_args(c(base_args, case)), case[[1]])
+write_primer3_settings(settings_path, 400L, 500L, config = custom$primer3_generation)
+assert_true(all(c("PRIMER_MIN_TM=54", "PRIMER_MAX_TM=66", "PRIMER_MIN_GC=25",
+  "PRIMER_MAX_GC=75", "PRIMER_MAX_SIZE=28", "PRIMER_PAIR_MAX_DIFF_TM=9",
+  "PRIMER_NUM_RETURN=11") %in% readLines(settings_path)), "Custom settings were lost")
+
+# Exercise main's real backend and its error cleanup in a separate R process.
+local({
+  script <- tempfile(fileext = ".R")
+  on.exit(unlink(script))
+  writeLines(c(
+    'source("oligo_designer.R")',
+    'configure_openprimer_environment <- function() NULL',
+    'make_design_input <- function(cli) {',
+    '  stopifnot(foreach::getDoParWorkers() == 2L)',
+    '  result <- foreach::`%dopar%`(foreach::foreach(i = 1:2), Sys.getpid())',
+    '  stopifnot(all(unlist(result) != Sys.getpid()))',
+    '  stop("backend_verified")',
+    '}',
+    'error <- tryCatch(main(commandArgs(TRUE)), error = identity)',
+    'stopifnot(conditionMessage(error) == "backend_verified",',
+    '          foreach::getDoParName() == "doSEQ", foreach::getDoParWorkers() == 1L)'
+  ), script)
+  output <- system2(file.path(R.home("bin"), "Rscript"),
+    shQuote(c("--vanilla", script, base_args, "--threads", "2")), stdout = TRUE, stderr = TRUE)
+  assert_true(is.null(attr(output, "status")), paste(output, collapse = "\n"))
+  assert_true(any(grepl("[parallel] backend=doParallelSNOW workers=2", output, fixed = TRUE)),
+              "Parallel backend startup message is missing")
+  assert_true(!any(grepl("no parallel backend registered", output)), "Missing parallel backend")
+})
+
+local({
+  path <- tempfile(fileext = ".tsv")
+  on.exit(unlink(path))
+  foreach::registerDoSEQ()
+  input <- list(output_dir = tempdir(), primer_qc_cache = new.env(), tools = list(),
+    parameters = utils::modifyList(custom, list(primer3_buffer = primer3_buffer_parameters())))
+  write_run_parameters(input, data.frame(gene = "example", class = "cds"), path)
+  report <- read_tsv(path, show_col_types = FALSE)
+  values <- setNames(report$value, report$parameter)
+  for (key in names(custom$primer3_generation)) {
+    assert_true(as.numeric(values[[primer3_option_names(key)]]) ==
+      custom$primer3_generation[[key]], paste("Missing effective setting", key))
+  }
+  assert_true(values[["parallel_workers"]] == "2" &&
+    values[["parallel_backend"]] == "doSEQ" &&
+    values[["primer_qc_expected_coordinate_tolerance"]] == "3" &&
+    values[["primer_qc_expected_size_tolerance"]] == "4" &&
+    values[["primer_qc_hard_max_tm_diff"]] == "4.5", "Run report lost effective settings")
+})
 
 message("Unit tests passed")

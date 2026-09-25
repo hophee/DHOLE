@@ -372,7 +372,8 @@ simulate_full_primer_pcr <- function(
   annealing_reverse,
   annealing_temp_c,
   buffer = primer3_buffer_parameters(),
-  max_product_size = 2000L
+  max_product_size = 2000L,
+  processors = 1L
 ) {
   if (!requireNamespace("DECIPHER", quietly = TRUE)) {
     stop("R-пакет DECIPHER не установлен", call. = FALSE)
@@ -426,7 +427,7 @@ simulate_full_primer_pcr <- function(
     ions = 0.2,
     includePrimers = TRUE,
     minEfficiency = 0.001,
-    processors = 1L
+    processors = processors
   )
   expected <- which(as.character(products) == primed_template)
   if (length(products) != 1L || length(expected) != 1L) {
@@ -516,7 +517,8 @@ model_design_pcr_products <- function(
       ptarget$annealing$reverse,
       input$parameters$sgrna_annealing_temp_c,
       buffer,
-      max_product_size
+      max_product_size,
+      processors = input$parameters$threads
     )
   })
 
@@ -555,7 +557,8 @@ model_design_pcr_products <- function(
         pair$PRIMER_RIGHT_TM[[i]]
       ) - 3, 1),
       buffer,
-      max_product_size
+      max_product_size,
+      processors = input$parameters$threads
     )
   }
 
@@ -599,7 +602,8 @@ model_design_pcr_products <- function(
       screening$PRIMER_RIGHT_SEQUENCE[[1]],
       screening_temp,
       buffer,
-      max_product_size
+      max_product_size,
+      processors = input$parameters$threads
     )
   }
   bind_rows(rows)
@@ -925,6 +929,21 @@ parse_designer_args <- function(args) {
     type = "integer"
   )
 
+  generation_defaults <- primer3_generation_defaults()
+  generation_keys <- setdiff(names(generation_defaults), c(
+    "max_self_any", "max_self_end", "pair_max_compl_any", "pair_max_compl_end"
+  ))
+  extra_defaults <- c(
+    setNames(generation_defaults[generation_keys], primer3_option_names(generation_keys)),
+    list(threads = 1L, primer_expected_coordinate_tolerance = 0L,
+         primer_expected_size_tolerance = 0L, primer_hard_max_tm_diff = 5)
+  )
+  for (key in names(extra_defaults)) {
+    option <- paste0("--", gsub("_", "-", key))
+    parser <- add_argument(parser, option, help = paste("Configure", option),
+                           default = as.numeric(extra_defaults[[key]]), type = "double")
+  }
+
   normalize_scalar <- function(value) {
     if (is.null(value) || length(value) != 1L || is.na(value[[1]])) {
       return(character())
@@ -983,6 +1002,34 @@ parse_designer_args <- function(args) {
   }
 
   parsed <- parse_args(parser, args)
+  for (key in names(extra_defaults)) {
+    value <- parsed[[key]]
+    minimum <- if (key %in% c("threads", "primer3_min_size", "primer3_opt_size",
+      "primer3_max_size", "primer3_max_poly_x", "primer3_num_return",
+      "screening_flank", "screening_product_slack", "screening_num_return")) 1 else 0
+    if (length(value) != 1L || !is.finite(value) || value < minimum ||
+        (is.integer(extra_defaults[[key]]) &&
+         (value != floor(value) || value > .Machine$integer.max))) {
+      stop(sprintf("Некорректный --%s", gsub("_", "-", key)), call. = FALSE)
+    }
+    if (is.integer(extra_defaults[[key]])) parsed[[key]] <- as.integer(value)
+  }
+  primer3_values <- setNames(lapply(primer3_option_names(generation_keys),
+                                  function(key) parsed[[key]]), generation_keys)
+  if (primer3_values$min_size > primer3_values$opt_size ||
+      primer3_values$opt_size > primer3_values$max_size) {
+    stop("Требуется --primer3-min-size <= --primer3-opt-size <= --primer3-max-size", call. = FALSE)
+  }
+  if (primer3_values$min_tm <= 0 || primer3_values$min_tm > primer3_values$opt_tm ||
+      primer3_values$opt_tm > primer3_values$max_tm || primer3_values$max_tm >= 100) {
+    stop("Требуется 0 < --primer3-min-tm <= --primer3-opt-tm <= --primer3-max-tm < 100", call. = FALSE)
+  }
+  if (primer3_values$min_gc > primer3_values$max_gc || primer3_values$max_gc > 100) {
+    stop("Требуется 0 <= --primer3-min-gc <= --primer3-max-gc <= 100", call. = FALSE)
+  }
+  if (primer3_values$gc_clamp > primer3_values$max_size) {
+    stop("--primer3-gc-clamp должен быть <= --primer3-max-size", call. = FALSE)
+  }
   annotation_format <- tolower(normalize_scalar(parsed$annotation_format))
   if (!annotation_format %in% c("bakta", "gff")) {
     stop(
@@ -1112,7 +1159,13 @@ parse_designer_args <- function(args) {
     left_arm = setNames(left_arm, c("min", "opt", "max")),
     right_arm = setNames(right_arm, c("min", "opt", "max")),
     n20_arm_min_distance = n20_arm_min_distance,
-    primer_qc = utils::modifyList(primer_qc_defaults(), as.list(qc_values))
+    threads = parsed$threads,
+    primer3_generation = utils::modifyList(generation_defaults, primer3_values),
+    primer_qc = utils::modifyList(primer_qc_defaults(), c(as.list(qc_values), list(
+      expected_coordinate_tolerance = parsed$primer_expected_coordinate_tolerance,
+      expected_size_tolerance = parsed$primer_expected_size_tolerance,
+      hard_max_tm_diff = parsed$primer_hard_max_tm_diff
+    )))
   )
   if (values$site1 == values$site2) {
     stop("--site1 и --site2 должны быть разными", call. = FALSE)
@@ -1158,6 +1211,23 @@ primer3_buffer_parameters <- function() {
     dntp_mm = 0.6,
     dna_nm = 50
   )
+}
+
+primer3_generation_defaults <- function() {
+  list(
+    min_size = 18L, opt_size = 21L, max_size = 27L,
+    min_tm = 55, opt_tm = 60, max_tm = 65, max_tm_diff = 8,
+    min_gc = 30, max_gc = 70, gc_clamp = 0L, max_poly_x = 5L,
+    max_self_any = 12, max_self_end = 8,
+    pair_max_compl_any = 12, pair_max_compl_end = 8,
+    num_return = 10L,
+    screening_flank = 250L, screening_product_slack = 200L,
+    screening_num_return = 10L
+  )
+}
+
+primer3_option_names <- function(keys) {
+  ifelse(startsWith(keys, "screening_"), keys, paste0("primer3_", keys))
 }
 
 primer_qc_defaults <- function() {
@@ -2430,6 +2500,14 @@ write_run_parameters <- function(input, targets, path) {
     ))
   }
   parameters <- c(
+    parallel_workers = input$parameters$threads,
+    parallel_backend = foreach::getDoParName(),
+    setNames(unlist(input$parameters$primer3_generation),
+             primer3_option_names(names(input$parameters$primer3_generation))),
+    primer_qc_expected_coordinate_tolerance =
+      input$parameters$primer_qc$expected_coordinate_tolerance,
+    primer_qc_expected_size_tolerance =
+      input$parameters$primer_qc$expected_size_tolerance,
     generated_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
     genome_file = input$genome_path,
     genome_annotation_file = input$annotation_path,
@@ -2593,6 +2671,8 @@ make_design_input <- function(cli) {
       primer3_config = file.path(.dhole_project_dir, "primer3/src/primer3_config")
     ),
     parameters = list(
+      threads = cli$threads,
+      primer3_generation = cli$primer3_generation,
       filtering_level = cli$filtering_level,
       n20_mn = cli$n20_mn,
       n20_strands = cli$n20_strands,
@@ -2986,7 +3066,8 @@ write_primer3_settings <- function(
   path,
   left_length,
   right_length,
-  buffer = primer3_buffer_parameters()
+  buffer = primer3_buffer_parameters(),
+  config = primer3_generation_defaults()
 ) {
   product <- round(c(
     min(left_length, right_length),
@@ -3000,26 +3081,26 @@ write_primer3_settings <- function(
       "PRIMER_TASK=generic",
       "PRIMER_PICK_LEFT_PRIMER=1",
       "PRIMER_PICK_RIGHT_PRIMER=1",
-      "PRIMER_NUM_RETURN=10",
-      "PRIMER_MIN_SIZE=18",
-      "PRIMER_OPT_SIZE=21",
-      "PRIMER_MAX_SIZE=22",
-      "PRIMER_MIN_TM=59.0",
-      "PRIMER_OPT_TM=60.0",
-      "PRIMER_MAX_TM=61.0",
+      paste0("PRIMER_NUM_RETURN=", config$num_return),
+      paste0("PRIMER_MIN_SIZE=", config$min_size),
+      paste0("PRIMER_OPT_SIZE=", config$opt_size),
+      paste0("PRIMER_MAX_SIZE=", config$max_size),
+      paste0("PRIMER_MIN_TM=", config$min_tm),
+      paste0("PRIMER_OPT_TM=", config$opt_tm),
+      paste0("PRIMER_MAX_TM=", config$max_tm),
       paste0("PRIMER_SALT_MONOVALENT=", buffer[["monovalent_salt_mm"]]),
       paste0("PRIMER_SALT_DIVALENT=", buffer[["divalent_salt_mm"]]),
       paste0("PRIMER_DNTP_CONC=", buffer[["dntp_mm"]]),
       paste0("PRIMER_DNA_CONC=", buffer[["dna_nm"]]),
-      "PRIMER_PAIR_MAX_DIFF_TM=5.0",
-      "PRIMER_MIN_GC=40.0",
-      "PRIMER_MAX_GC=60.0",
-      "PRIMER_GC_CLAMP=1",
-      "PRIMER_MAX_SELF_ANY=12.0",
-      "PRIMER_MAX_SELF_END=8.0",
-      "PRIMER_PAIR_MAX_COMPL_ANY=12.0",
-      "PRIMER_PAIR_MAX_COMPL_END=8.0",
-      "PRIMER_MAX_POLY_X=4",
+      paste0("PRIMER_PAIR_MAX_DIFF_TM=", config$max_tm_diff),
+      paste0("PRIMER_MIN_GC=", config$min_gc),
+      paste0("PRIMER_MAX_GC=", config$max_gc),
+      paste0("PRIMER_GC_CLAMP=", config$gc_clamp),
+      paste0("PRIMER_MAX_SELF_ANY=", config$max_self_any),
+      paste0("PRIMER_MAX_SELF_END=", config$max_self_end),
+      paste0("PRIMER_PAIR_MAX_COMPL_ANY=", config$pair_max_compl_any),
+      paste0("PRIMER_PAIR_MAX_COMPL_END=", config$pair_max_compl_end),
+      paste0("PRIMER_MAX_POLY_X=", config$max_poly_x),
       paste0("PRIMER_PRODUCT_SIZE_RANGE=", product[[1]], "-", product[[2]]),
       "PRIMER_EXPLAIN_FLAG=1",
       "PRIMER_FIRST_BASE_INDEX=1",
@@ -3564,7 +3645,8 @@ design_homology_arms <- function(
     settings,
     left_limits[["max"]],
     right_limits[["max"]],
-    input$parameters$primer3_buffer
+    buffer = input$parameters$primer3_buffer,
+    config = input$parameters$primer3_generation
   )
   if (!file.exists(input$tools$primer3)) {
     stop("primer3_core не найден", call. = FALSE)
@@ -3616,14 +3698,15 @@ design_homology_arms <- function(
       DNAStringSet(c(left_arm = left_seq, right_arm = right_seq)),
       file.path(target_dir, "homology_arms_before_primer_search.fasta")
     )
-    tm <- if (design_class == "cds") c(62.5, 63, 63.5) else c(60.5, 61, 62.5)
+    primer3_config <- input$parameters$primer3_generation
+    tm <- c(primer3_config$min_tm, primer3_config$opt_tm, primer3_config$max_tm)
     left <- callPrimer3(
       as.character(left_seq),
       paste0(left_limits[["min"]], "-", length(left_seq)),
       tm,
-      2,
+      Tm_diff = primer3_config$max_tm_diff,
       "left_arm",
-      primer_num = 10,
+      primer_num = primer3_config$num_return,
       primer3 = input$tools$primer3,
       thermo.param = input$tools$primer3_config,
       settings = settings,
@@ -3633,9 +3716,9 @@ design_homology_arms <- function(
       as.character(right_seq),
       paste0(right_limits[["min"]], "-", length(right_seq)),
       tm,
-      2,
+      Tm_diff = primer3_config$max_tm_diff,
       "right_arm",
-      primer_num = 10,
+      primer_num = primer3_config$num_return,
       primer3 = input$tools$primer3,
       thermo.param = input$tools$primer3_config,
       settings = settings,
@@ -3915,7 +3998,8 @@ design_homology_arms <- function(
       }
       if (length(ranking_rows)) {
         selection <- select_best_primer_pair(bind_rows(ranking_rows))
-        deferred <- !is.null(selection$pair) &&
+        deferred <- input$parameters$filtering_level > 1L &&
+          !is.null(selection$pair) &&
           isTRUE(selection$pair$fallback_selected[[1]])
         trace_ranking <- selection$ranking
         if (deferred) {
@@ -4535,18 +4619,23 @@ write_design_outputs <- function(
   writeXStringSet(plain, plain_path)
 
   offtarget_range <- range(unlist(pair[, c("genome_start", "genome_end")]))
+  config <- input$parameters$primer3_generation
   screening_range <- pmax(
     1L,
-    pmin(as.integer(offtarget_range + c(-200L, 200L)), length(input$genome))
+    pmin(
+      as.integer(offtarget_range + c(-config$screening_flank, config$screening_flank)),
+      length(input$genome)
+    )
   )
   screening_seq <- input$genome[screening_range[[1]]:screening_range[[2]]]
   screening <- callPrimer3(
     as.character(screening_seq),
-    paste0(length(screening_seq) - 100L, "-", length(screening_seq)),
-    c(62.5, 63, 63.5),
-    2,
+    paste0(max(1L, length(screening_seq) - config$screening_product_slack),
+           "-", length(screening_seq)),
+    c(config$min_tm, config$opt_tm, config$max_tm),
+    config$max_tm_diff,
     "genome_screening",
-    primer_num = 5,
+    primer_num = config$screening_num_return,
     primer3 = input$tools$primer3,
     thermo.param = input$tools$primer3_config,
     settings = file.path(target_dir, "primer3_settings.txt"),
@@ -5351,8 +5440,28 @@ design_target <- function(input, genome_name, gene_name, design_class) {
   )
 }
 
+register_parallel_backend <- function(threads) {
+  foreach::registerDoSEQ()
+  if (threads == 1L) return(NULL)
+  cluster <- parallel::makePSOCKcluster(threads)
+  tryCatch(doParallel::registerDoParallel(cluster), error = function(e) {
+    parallel::stopCluster(cluster)
+    stop(e)
+  })
+  cluster
+}
+
 main <- function(args = commandArgs(trailingOnly = TRUE)) {
   cli <- parse_designer_args(args)
+  cluster <- register_parallel_backend(cli$threads)
+  if (!is.null(cluster)) {
+    on.exit({
+      parallel::stopCluster(cluster)
+      foreach::registerDoSEQ()
+    }, add = TRUE)
+  }
+  message(sprintf("[parallel] backend=%s workers=%d",
+                  foreach::getDoParName(), foreach::getDoParWorkers()))
   configure_openprimer_environment()
   input <- make_design_input(cli)
   message(sprintf(
