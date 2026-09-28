@@ -1,9 +1,37 @@
-tempo
-tempo/*
-callPrimer3.R
-.Rproj.user
+# IDE metadata
+/.Rproj.user/
 *.Rproj
-primer3/*
-primer3
-virtualPCR/*
-virtualPCR
+
+# Installed/downloaded dependencies
+/chopchop/
+/primer3/
+
+# Local archival/work directory
+/tempo/
+/WORKING_NOTES.md
+/problems.md
+/test/*
+!/test/test_run.sh
+!/test/test_r_environment.sh
+!/test/test_unit.R
+!/test/test_screening_fixture.R
+!/test/test_regressions.R
+
+# Private/local target-plasmid inputs
+pTarget*.fasta
+ptarget*.fasta
+
+# Local technical specifications and dated archives
+/TECHNICAL_SPECIFICATION.md
+/old_descriptions/
+
+# Generated genome indexes
+*.2bit
+*.ebwt
+
+# Other
+/protocol.md
+/poster.pdf
+/DHOLE_ARCHITECTURE_RU.md
+/README_AUDIT.md
+/WORKING_ON_*

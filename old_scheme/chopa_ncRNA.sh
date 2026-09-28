@@ -2,31 +2,75 @@
 #source: https://github.com/hophee/2PAC
 
 eval "$(conda shell.bash hook)"
-conda activate chopchop
+conda activate oligo_design
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# $1 - genome
-# $2 - tsv
-# $3 - gene name
-# $4 - pTarget+pCas fasta
-# $5 - output dir
+usage() {
+  cat <<'EOF'
+Использование:
+  ./chopa_ncRNA.sh --genome GENOME --genome_annotation ANNOTATION --gene_name GENE \
+    --target_plasmid PTARGET --output_dir OUTPUT_DIR \
+    [--cas_plasmid CAS] [--annotation_format bakta|gff]
+EOF
+}
 
-output_dir=${5,,}
-genome_name=$(basename "$1" | cut -d. -f1)
+genome=""
+genome_annotation=""
+gene_name=""
+target_plasmid=""
+output_dir=""
+cas_plasmid=""
+annotation_format="bakta"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --genome) genome="$2" ;;
+    --genome_annotation|--genome-annotation) genome_annotation="$2" ;;
+    --gene_name|--gene-name) gene_name="$2" ;;
+    --target_plasmid|--target-plasmid) target_plasmid="$2" ;;
+    --output_dir|--output-dir) output_dir="$2" ;;
+    --cas_plasmid|--cas-plasmid) cas_plasmid="$2" ;;
+    --annotation_format|--annotation-format) annotation_format="$2" ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "Неизвестный аргумент: $1" >&2; usage >&2; exit 2 ;;
+  esac
+  if [ "$#" -lt 2 ]; then
+    echo "Для аргумента $1 не задано значение" >&2
+    exit 2
+  fi
+  shift 2
+done
+
+for required_name in genome genome_annotation gene_name target_plasmid output_dir; do
+  if [ -z "${!required_name}" ]; then
+    echo "Не задан обязательный аргумент --${required_name}" >&2
+    usage >&2
+    exit 2
+  fi
+done
+
+output_dir=${output_dir,,}
+genome_name=$(basename "$genome" | cut -d. -f1)
+genome_dir="$(cd -- "$(dirname -- "$genome")" && pwd)"
 
 # 2bit
-if [ ! -f "tbit/${genome_name}.2bit" ]; then
-  mkdir -p tbit
-  faToTwoBit "$1" "tbit/${genome_name}.2bit"
+if [ ! -f "$genome_dir/${genome_name}.2bit" ]; then
+  faToTwoBit "$genome" "$genome_dir/${genome_name}.2bit"
 fi
 
 # Проверка bowtie индексов
-if [ ! -f "bwt_idx/${genome_name}.1.ebwt" ]; then
-  mkdir -p bwt_idx
-  bowtie-build "$1" "bwt_idx/${genome_name}"
+if [ ! -f "$genome_dir/${genome_name}.1.ebwt" ]; then
+  bowtie-build "$genome" "$genome_dir/${genome_name}"
 fi
 
+annotation_args=(
+  --genome "$genome"
+  --genome_annotation "$genome_annotation"
+  --gene_name "$gene_name"
+  --annotation_format "$annotation_format"
+)
 
-TARGET_REGION=$(Rscript get_cords2.R "$1" "$2" "$3")
+TARGET_REGION=$(Rscript "$script_dir/get_cords2.R" "${annotation_args[@]}")
 
 # Проверяем, что TARGET_REGION не пуст
 if [ -z "$TARGET_REGION" ]; then
@@ -57,7 +101,15 @@ mkdir -p "$output_dir"/offtargets_n20
 mv "$output_dir"/*offtargets "$output_dir"/offtargets_n20/
 
 echo -e "Извлекаю последовательности плеч гомологии..."
-Rscript get_gRNA_place2.R "$output_dir" "$1" "$4" "$2" "$3"
+grna_args=(
+  "${annotation_args[@]}"
+  --target_plasmid "$target_plasmid"
+  --output_dir "$output_dir"
+)
+if [ -n "$cas_plasmid" ]; then
+  grna_args+=(--cas_plasmid "$cas_plasmid")
+fi
+Rscript "$script_dir/get_gRNA_place2.R" "${grna_args[@]}"
 
 if [ $? -ne 0 ]; then
   echo -e "Ошибка при извлечении последовательностей плеч гомологии" >&2

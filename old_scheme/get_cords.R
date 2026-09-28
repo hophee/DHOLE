@@ -1,31 +1,23 @@
 suppressPackageStartupMessages(library(Biostrings))
-suppressPackageStartupMessages(library(dplyr))
-suppressPackageStartupMessages(library(readr))
 
-# 1 - genome
-# 2 - tsv
-# 3 locus tag/gene name
+# --genome
+# --genome_annotation
+# --gene_name
+# --annotation_format (optional: bakta, gff; default: bakta)
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 3) {
-  stop("Требуется 3 аргумента: геном, tsv-таблица, название гена/локус тэг",
-    call. = FALSE
-  )
-}
-genome_name <- readDNAStringSet(args[1])@ranges@NAMES[1]
+script_path <- sub("^--file=", "", commandArgs(FALSE)[grep("^--file=", commandArgs(FALSE))][1])
+source(file.path(dirname(normalizePath(script_path)), "pipeline_utils.R"))
+input <- parse_named_args(
+  args,
+  required = c("genome", "genome_annotation", "gene_name"),
+  optional = "annotation_format"
+)
+annotation_format <- if (is.null(input$annotation_format)) "bakta" else input$annotation_format
 
-
-lines <- readLines(args[2])
-hash_lines <- grep("^#", lines)
-skip_lines <- if (length(hash_lines) > 0) max(hash_lines) - 1 else 0
-genome_table <- read_tsv(args[2], skip = skip_lines, show_col_types = FALSE) %>%
-  janitor::clean_names()
-
-if (grepl("ECZV_", args[3]) | grepl("ZvL2_Glu_", args[3])) {
-  g_idx <- which(genome_table$locus_tag == args[3])[1]
-} else {
-  g_idx <- which(genome_table$gene == args[3])[1]
-}
+genome_name <- readDNAStringSet(input$genome)@ranges@NAMES[1]
+genome_table <- read_genome_annotation(input$genome_annotation, annotation_format)
+g_idx <- find_target_feature(genome_table, input$gene_name)
 gene_start <- genome_table$start[g_idx]
 gene_end <- genome_table$stop[g_idx]
 

@@ -2,40 +2,37 @@
 suppressPackageStartupMessages(library(Biostrings))
 suppressPackageStartupMessages(library(dplyr))
 suppressPackageStartupMessages(library(readr))
-suppressPackageStartupMessages(library(stringr))
-suppressPackageStartupMessages(library(read.gb))
 
-# 1 - result directory
-# 2 - genome
-# 3 - pTarget
-# 4 - tsv
-# 5 - locus tag/gene name
+# --genome
+# --genome_annotation
+# --gene_name
+# --target_plasmid
+# --output_dir
+# --cas_plasmid (optional; reserved for downstream use)
+# --annotation_format (optional: bakta, gff; default: bakta)
 
 args <- commandArgs(trailingOnly = TRUE)
+script_path <- sub("^--file=", "", commandArgs(FALSE)[grep("^--file=", commandArgs(FALSE))][1])
+legacy_dir <- dirname(normalizePath(script_path))
+source(file.path(legacy_dir, "pipeline_utils.R"))
+input <- parse_named_args(
+  args,
+  required = c("genome", "genome_annotation", "gene_name", "target_plasmid", "output_dir"),
+  optional = c("cas_plasmid", "annotation_format")
+)
 
-if (length(args) != 5) {
-  stop("Требуется 5 аргумента: result_directory, genome, plasmids, tsv-annotation, gene name", call. = FALSE)
-}
+result_dir <- input$output_dir
+genome_path <- input$genome
+pTarget_path <- input$target_plasmid
+cas_plasmid_path <- input$cas_plasmid
+annotation_format <- if (is.null(input$annotation_format)) "bakta" else input$annotation_format
 
-result_dir <- args[1]
-genome_path <- args[2]
-pTarget_path <- args[3]
-
-lines <- readLines(args[4])
-hash_lines <- grep("^#", lines)
-skip_lines <- if (length(hash_lines) > 0) max(hash_lines) - 1 else 0
-genome_table <- read_tsv(args[4], skip = skip_lines, show_col_types = FALSE) %>%
-  janitor::clean_names()
-
-if (grepl("ECZV_", args[5]) | grepl("ZvL2_Glu_", args[5])) {
-  g_idx <- which(genome_table$locus_tag == args[5])[1]
-} else {
-  g_idx <- which(genome_table$gene == args[5])[1]
-}
+genome_table <- read_genome_annotation(input$genome_annotation, annotation_format)
+g_idx <- find_target_feature(genome_table, input$gene_name)
 
 # Загружаем функцию callPrimer3 из GitHub
 # suppressMessages(devtools::source_url("https://gist.githubusercontent.com/IdoBar/5e78ae7a5cc7277a04b126ce6f595d6e/raw/45c60662f3479f41765bce839835c4988a7e5b36/callPrimer3.R"))
-source("callPrimer3.R")
+source(file.path(dirname(legacy_dir), "callPrimer3.R"))
 
 #
 is_range_contained <- function(range1, range2) {
@@ -78,6 +75,12 @@ cat(paste0("Название гена: ", gene_name, "\n"))
 cat(paste0("Длина гена: ", gene_length, "\n"))
 cat(paste0("Границы гена: ", gene_start, "-", gene_end, "\n"))
 
+nearest_genes <- genome_table %>%
+  slice(g_idx - 1, g_idx + 1) %>%
+  select(start, stop) %>%
+  as.matrix() %>%
+  sort()
+nearest_genes <- nearest_genes[2:3]
 
 # Читаем таблицу с результатами ChopChop
 gRNA_table_path <- file.path(result_dir, "n20_table.tsv")
@@ -88,8 +91,8 @@ gRNA_table <- read_tsv(gRNA_table_path, show_col_types = FALSE) %>%
   mutate(n20_mid = (genomic_start + genomic_end) %/% 2) %>%
   mutate(mid_closeness = (abs(gene_center - n20_mid)) / gene_length) %>%
   filter(self_complementarity == 0) %>%
-  filter(mm0 == 0) %>%
-  filter(mid_closeness <= 0.18)
+  filter(mm0 == 0) # %>%
+# filter(mid_closeness <= 0.18)
 
 # Проверяем, что таблица не пустая
 if (nrow(gRNA_table) == 0) {
@@ -106,10 +109,9 @@ minus_strand <- gRNA_table %>%
 best_gRNA <- bind_rows(plus_strand, minus_strand) %>%
   arrange(mid_closeness) %>%
   slice_head(n = 3)
-
-if (nrow(best_gRNA) < 3) {
-  stop("Недостаточно gRNA для определения границ вырезания (менее 2)", call. = FALSE)
-}
+best_gRNA %>%
+  select(1:11) %>%
+  write_tsv(file.path(result_dir, "selected_n20_table.tsv"))
 selected_gRNA_set <- best_gRNA$target_sequence %>%
   substring(1, 20) %>%
   DNAStringSet()
@@ -120,6 +122,10 @@ writeXStringSet(selected_gRNA_set,
 writeXStringSet(selected_gRNA_set,
   filepath = file.path(result_dir, paste0(gene_name, "_selected_n20.txt"))
 )
+
+if (nrow(best_gRNA) < 3) {
+  stop("Недостаточно gRNA для определения границ вырезания (менее 2)", call. = FALSE)
+}
 
 gRNA_ranges <- best_gRNA %>%
   select(genomic_start, genomic_end) %>%
@@ -141,8 +147,12 @@ rha_length <- 400
 # }
 
 if (gene_length <= 500) {
-  cut_start <- gene_start
-  cut_end <- gene_end
+  gap <- round(gene_length / 10, -1) * 2
+  cut_start <- gene_start - gap
+  cut_end <- gene_end + gap
+
+  cut_start <- max(cut_start, nearest_genes[1])
+  cut_end <- min(cut_end, nearest_genes[2])
 } else if (gene_length > 500 & gene_length < 1500) {
   side <- 250
   mid <- gene_start + gene_length %/% 2
@@ -165,15 +175,21 @@ if (on_plus_strand) {
   left_arm_start <- cut_region_range[2] + 1
   left_arm_end <- min(genome_length, cut_region_range[2] + (lha_length + gap))
 }
+ticker <- 0
 repeat{
+  ticker <- ticker + 1
   if (on_plus_strand) {
-    left_arm_end <- cut_region_range[1] - 1
-    right_arm_start <- cut_region_range[2] + 1
+    # left_arm_end <- cut_region_range[1] - 1
+    # right_arm_start <- cut_region_range[2] + 1
+
+    left_arm_end <- max((cut_region_range[1] - 1), nearest_genes[1])
+    right_arm_start <- min((cut_region_range[2] + 1), nearest_genes[2])
+
     left_arm <- genome[left_arm_start:left_arm_end]
     right_arm <- genome[right_arm_start:right_arm_end]
   } else {
-    right_arm_end <- cut_region_range[1] - 1
-    left_arm_start <- cut_region_range[2] + 1
+    right_arm_end <- max((cut_region_range[1] - 1), nearest_genes[1])
+    left_arm_start <- min((cut_region_range[2] + 1), nearest_genes[2])
     left_arm <- genome[left_arm_start:left_arm_end] %>%
       reverse() %>%
       complement()
@@ -280,7 +296,7 @@ repeat{
       callPrimer3(
         seq = as.character(left_arm),
         size_range = paste0(l_l[1], "-", l_l[2]),
-        Tm = c(62.5, 63.0, 63.5),
+        Tm = c(60.5, 61.0, 62.5),
         Tm_diff = 2.0,
         name = names(homology_arms)[1],
         primer_num = 10,
@@ -292,12 +308,14 @@ repeat{
     },
     error = function(e) {
       warning(sprintf("Primer3 не нашёл праймеров для левого плеча: %s", e$message))
-      NULL # Возвращаем NULL вместо NA
+      NULL
     }
   )
   if (is.null(left_primers) || !is.data.frame(left_primers) || nrow(left_primers) == 0) {
     warning("Пропускаем текущие границы вырезания — нет праймеров для левого плеча")
     cut_region_range <- cut_region_range + c(1, -1)
+    cut_region_range[1] <- min(gRNA_ranges[1], cut_region_range[1])
+    cut_region_range[2] <- max(gRNA_ranges[2], cut_region_range[2])
 
     if (!is_range_contained(gRNA_ranges, cut_region_range) & exists("ha_primers")) {
       cat("Не удалось подобрать оптимальную пару праймеров без выхода за границы гена!\n")
@@ -317,7 +335,7 @@ repeat{
       callPrimer3(
         seq = as.character(right_arm),
         size_range = paste0(l_r[1], "-", l_r[2]),
-        Tm = c(62.5, 63.0, 63.5),
+        Tm = c(60.5, 61.0, 62.5),
         Tm_diff = 2.0,
         name = names(homology_arms)[2],
         primer_num = 10,
@@ -335,6 +353,8 @@ repeat{
   if (is.null(right_primers) || !is.data.frame(right_primers) || nrow(right_primers) == 0) {
     warning("Пропускаем текущие границы вырезания — нет праймеров для правого плеча")
     cut_region_range <- cut_region_range + c(1, -1)
+    cut_region_range[1] <- min(gRNA_ranges[1]-1, cut_region_range[1])
+    cut_region_range[2] <- max(gRNA_ranges[2]+1, cut_region_range[2])
 
     if (!is_range_contained(gRNA_ranges, cut_region_range) & exists("ha_primers")) {
       cat("Не удалось подобрать оптимальную пару праймеров без выхода за границы гена!\n")
@@ -348,23 +368,31 @@ repeat{
   }
 
   if (on_plus_strand) {
-    left_primers <- left_primers %>% mutate(
-      genome_start = (PRIMER_LEFT_pos + left_arm_start - 1),
-      genome_end = (PRIMER_RIGHT_pos + left_arm_start - 1)
-    )
-    right_primers <- right_primers %>% mutate(
-      genome_start = (PRIMER_LEFT_pos + right_arm_start - 1),
-      genome_end = (PRIMER_RIGHT_pos + right_arm_start - 1)
-    )
+    left_primers <- left_primers %>%
+      mutate(
+        genome_start = (PRIMER_LEFT_pos + left_arm_start - 1),
+        genome_end = (PRIMER_RIGHT_pos + left_arm_start - 1)
+      ) %>%
+      filter(genome_end <= nearest_genes[1])
+    right_primers <- right_primers %>%
+      mutate(
+        genome_start = (PRIMER_LEFT_pos + right_arm_start - 1),
+        genome_end = (PRIMER_RIGHT_pos + right_arm_start - 1)
+      ) %>%
+      filter(genome_start >= nearest_genes[2])
   } else {
-    left_primers <- left_primers %>% mutate(
-      genome_start = left_arm_end - PRIMER_RIGHT_pos - 1,
-      genome_end   = left_arm_end - PRIMER_LEFT_pos - 1
-    )
-    right_primers <- right_primers %>% mutate(
-      genome_start = right_arm_end - PRIMER_RIGHT_pos + 1,
-      genome_end   = right_arm_end - PRIMER_LEFT_pos + 1
-    )
+    left_primers <- left_primers %>%
+      mutate(
+        genome_start = left_arm_end - PRIMER_RIGHT_pos - 1,
+        genome_end   = left_arm_end - PRIMER_LEFT_pos - 1
+      ) %>%
+      filter(genome_start >= nearest_genes[2])
+    right_primers <- right_primers %>%
+      mutate(
+        genome_start = right_arm_end - PRIMER_RIGHT_pos + 1,
+        genome_end   = right_arm_end - PRIMER_LEFT_pos + 1
+      ) %>%
+      filter(genome_end <= nearest_genes[2])
   }
 
 
@@ -450,6 +478,11 @@ repeat{
       break
     }
   }
+  
+  if (ticker>1000){
+    cat("Не удалось подобрать оптимальную пару праймеров за 1000 попыток!\n")
+    break
+    }
 }
 if (((ha_ticks[3] - ha_ticks[2] - 1) %% 3) == 0) {
   in_frame <- "in-frame"
@@ -493,7 +526,7 @@ genome_primers <- tryCatch(
     callPrimer3(
       seq = as.character(screening_seq),
       size_range = paste0(length(screening_seq) - 100, "-", length(screening_seq)),
-      Tm = c(62.5, 63.0, 63.5),
+      Tm = c(60.5, 61.0, 62.5),
       Tm_diff = 2.0,
       name = paste0("genome_screening:", screening_range[1], "-", screening_range[2]),
       primer_num = 5,
@@ -596,6 +629,7 @@ writeLines(c(
   "ShowPrimerAlignmentPCRproduct=false",
   "primerstatistic=true"
 ), virtual_pcr_config3)
+
 
 virtual_pcr_config <- file.path(result_dir, "pcr_config.conf")
 writeLines(c(

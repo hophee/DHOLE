@@ -1,0 +1,4 @@
+*.sh text eol=lf
+*.R text eol=lf
+/tools/run-r text eol=lf
+/tools/melting-batch text eol=lf

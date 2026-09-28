@@ -1,0 +1,7 @@
+name: oligo_design_viennarna
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - viennarna=2.7.2

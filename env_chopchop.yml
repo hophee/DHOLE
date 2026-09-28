@@ -1,0 +1,13 @@
+name: oligo_design_chopchop
+
+channels:
+  - conda-forge/label/cf202003
+  - nodefaults
+
+dependencies:
+  - python=2.7
+  - biopython=1.74
+  - numpy=1.12.1
+  - pandas=0.24.2
+  - scikit-learn=0.18.1
+  - scipy=1.2.1

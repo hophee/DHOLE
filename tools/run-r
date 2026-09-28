@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly RUNNER="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
+readonly CONDA_ENV_NAME="oligo_design"
+
+if [[ "${CONDA_DEFAULT_ENV:-}" != "$CONDA_ENV_NAME" ]]; then
+  command -v conda >/dev/null 2>&1 || {
+    printf 'ERROR: conda is not available in PATH\n' >&2
+    exit 1
+  }
+  exec conda run --no-capture-output --name "$CONDA_ENV_NAME" \
+    bash "$RUNNER" "$@"
+fi
+
+[[ -n "${CONDA_PREFIX:-}" && -x "$CONDA_PREFIX/bin/Rscript" ]] || {
+  printf 'ERROR: Rscript is missing from the oligo_design environment\n' >&2
+  exit 1
+}
+
+# --vanilla skips startup files but does not clear inherited library paths.
+unset R_HOME
+export R_LIBS="" R_LIBS_USER=NULL R_LIBS_SITE=NULL
+export PATH="$CONDA_PREFIX/bin:$PATH"
+exec "$CONDA_PREFIX/bin/Rscript" --vanilla "$@"
