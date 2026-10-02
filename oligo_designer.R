@@ -51,6 +51,7 @@ SGRNA_REVERSE_ANNEALING <- reverse_complement_string(substr(
 ))
 SGRNA_REVERSE_OVERHANG <- "AGTTGACGCT"
 SGRNA_PRODUCT_OVERLAP <- reverse_complement_string(SGRNA_REVERSE_OVERHANG)
+BOWTIE_INDEX_VERSION <- "1.3.1"
 
 design_bridge <- function(design_class, deleted_nt) {
   substr("ATGACTGCCCGCAAG", 1L,
@@ -2609,8 +2610,7 @@ write_run_parameters <- function(input, targets, path) {
     biostrings_version = as.character(packageVersion("Biostrings")),
     melting_executable = Sys.which("melting-batch"),
     viennarna_executable = Sys.which("RNAfold"),
-    oligoarrayaux_executable = Sys.which("hybrid-min"),
-    mafft_executable = Sys.which("mafft")
+    oligoarrayaux_executable = Sys.which("hybrid-min")
   )
   write_tsv(
     data.frame(
@@ -2789,8 +2789,9 @@ prepare_chopchop_assets <- function(input) {
   checksum_file <- paste0(bowtie_prefix, ".fasta.md5")
   checksum <- unname(tools::md5sum(input$genome_path))
   if (is.na(checksum)) stop("Не удалось прочитать FASTA для индексации", call. = FALSE)
+  marker <- c(checksum, paste0("bowtie=", BOWTIE_INDEX_VERSION))
   reusable <- file.exists(checksum_file) &&
-    identical(readLines(checksum_file, warn = FALSE), checksum) &&
+    identical(readLines(checksum_file, warn = FALSE), marker) &&
     all(file.exists(index_files)) && all(file.size(index_files) > 0L)
   if (!reusable) {
     # A marker is written only after both tools completed and every file exists.
@@ -2800,7 +2801,7 @@ prepare_chopchop_assets <- function(input) {
     if (!all(file.exists(index_files)) || any(file.size(index_files) == 0L)) {
       stop("Индексация генома не создала полный комплект файлов", call. = FALSE)
     }
-    writeLines(checksum, checksum_file)
+    writeLines(marker, checksum_file)
   }
   list(name = genome_name, directory = index_dir)
 }

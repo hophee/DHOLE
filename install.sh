@@ -7,13 +7,12 @@ readonly CONDA_ENV_NAME="oligo_design"
 
 readonly CHOPCHOP_ENV_FILE="$PROJECT_DIR/env_chopchop.yml"
 readonly CHOPCHOP_ENV_NAME="oligo_design_chopchop"
-
-readonly VIENNARNA_ENV_FILE="$PROJECT_DIR/env_viennarna.yml"
-readonly VIENNARNA_ENV_NAME="oligo_design_viennarna"
-
+readonly CHOPCHOP_REPOSITORY="https://github.com/JokingHero/chopchop.git"
+readonly CHOPCHOP_COMMIT="a5638846852368ceb524241261fcfcf774942edf"
 
 readonly TEST_DIR="$PROJECT_DIR/test"
 readonly MELTING_WRAPPER="$PROJECT_DIR/tools/melting-batch"
+readonly CHOPCHOP_PYTHON_WRAPPER="$PROJECT_DIR/tools/chopchop-python"
 readonly R_RUNNER="$PROJECT_DIR/tools/run-r"
 
 readonly MG1655_REFSEQ_URL="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/005/845/GCF_000005845.2_ASM584v2"
@@ -58,6 +57,33 @@ clone_if_missing() {
     GIT_TERMINAL_PROMPT=0 \
       git clone --depth 1 "$repository" "$destination" || return 1
   fi
+}
+
+
+checkout_commit() {
+  local repository=$1
+  local destination=$2
+  local commit=$3
+
+  if [[ -e "$destination" && ! -d "$destination/.git" ]]; then
+    printf 'ERROR: %s already exists but is not a Git checkout.\n' \
+      "$destination" >&2
+    return 1
+  fi
+
+  if [[ ! -e "$destination" ]]; then
+    git init --quiet "$destination" || return 1
+  fi
+
+  if ! git -C "$destination" cat-file -e "${commit}^{commit}" 2>/dev/null; then
+    GIT_TERMINAL_PROMPT=0 \
+      git -C "$destination" fetch --quiet --depth 1 "$repository" "$commit" ||
+      return 1
+  fi
+
+  git -C "$destination" checkout --quiet --detach "$commit" || return 1
+
+  [[ "$(git -C "$destination" rev-parse HEAD)" == "$commit" ]]
 }
 
 
@@ -117,64 +143,59 @@ install_melting_wrapper() {
 }
 
 
-install_viennarna_commands() {
-  local main_prefix
-  local viennarna_prefix
+remove_legacy_viennarna_links() {
   local command_name
+  local command_path
+  local link_target
+  local main_prefix
 
   main_prefix="$(
     conda_environment_prefix "$CONDA_ENV_NAME"
   )"
 
-  viennarna_prefix="$(
-    conda_environment_prefix "$VIENNARNA_ENV_NAME"
-  )"
-
-  [[ -n "$main_prefix" &&
-     -n "$viennarna_prefix" &&
-     -d "$main_prefix/bin" ]] || {
-    printf 'ERROR: cannot locate the main or ViennaRNA environment.\n' >&2
-    return 1
-  }
+  [[ -n "$main_prefix" && -d "$main_prefix/bin" ]] || return 0
 
   for command_name in RNAfold RNAduplex RNAsubopt; do
-    [[ -x "$viennarna_prefix/bin/$command_name" ]] || {
-      printf 'ERROR: ViennaRNA command not found: %s\n' \
-        "$command_name" >&2
-      return 1
-    }
+    command_path="$main_prefix/bin/$command_name"
+    [[ -L "$command_path" ]] || continue
 
-    ln -sfn \
-      "$viennarna_prefix/bin/$command_name" \
-      "$main_prefix/bin/$command_name" ||
-      return 1
+    link_target="$(readlink "$command_path")"
+    if [[ "$link_target" == */oligo_design_viennarna/bin/"$command_name" ]]; then
+      rm -f -- "$command_path" || return 1
+    fi
   done
 }
 
 
 install_chopchop_python() {
+  local launcher_path
   local main_prefix
-  local chopchop_prefix
+  local temporary_launcher
 
   main_prefix="$(
     conda_environment_prefix "$CONDA_ENV_NAME"
   )"
 
-  chopchop_prefix="$(
-    conda_environment_prefix "$CHOPCHOP_ENV_NAME"
-  )"
-
   [[ -n "$main_prefix" &&
-     -n "$chopchop_prefix" &&
      -d "$main_prefix/bin" &&
-     -x "$chopchop_prefix/bin/python" ]] || {
-    printf 'ERROR: cannot locate the isolated CHOPCHOP Python 2 runtime.\n' >&2
+     -f "$CHOPCHOP_PYTHON_WRAPPER" ]] || {
+    printf 'ERROR: cannot install the CHOPCHOP Python 2 launcher.\n' >&2
     return 1
   }
 
-  ln -sfn \
-    "$chopchop_prefix/bin/python" \
-    "$main_prefix/bin/chopchop-python"
+  conda run --name "$CHOPCHOP_ENV_NAME" python --version >/dev/null 2>&1 || {
+    printf 'ERROR: Python is unavailable in %s.\n' "$CHOPCHOP_ENV_NAME" >&2
+    return 1
+  }
+
+  launcher_path="$main_prefix/bin/chopchop-python"
+  temporary_launcher="${launcher_path}.tmp"
+
+  install -m 0755 \
+    "$CHOPCHOP_PYTHON_WRAPPER" \
+    "$temporary_launcher" || return 1
+
+  mv -f -- "$temporary_launcher" "$launcher_path"
 }
 
 
@@ -363,8 +384,6 @@ verify_primer_qc_dependencies() {
     commands <- c(
       "hybrid-min",
       "RNAfold",
-      "RNAduplex",
-      "RNAsubopt",
       "melting-batch",
       "java",
       "javac",
@@ -521,6 +540,10 @@ cd "$PROJECT_DIR" || exit 1
 if command -v conda >/dev/null 2>&1; then
 
   run_step \
+    "legacy ViennaRNA command links" \
+    remove_legacy_viennarna_links
+
+  run_step \
     "Conda environment $CONDA_ENV_NAME" \
     install_conda_environment \
     "$CONDA_ENV_NAME" \
@@ -534,13 +557,6 @@ if command -v conda >/dev/null 2>&1; then
     "$CHOPCHOP_ENV_FILE"
 
 
-  run_step \
-    "Conda environment $VIENNARNA_ENV_NAME" \
-    install_conda_environment \
-    "$VIENNARNA_ENV_NAME" \
-    "$VIENNARNA_ENV_FILE"
-
-
   #
   # Make isolated tools visible from the main environment.
   #
@@ -552,11 +568,6 @@ if command -v conda >/dev/null 2>&1; then
   run_step \
     "isolated CHOPCHOP Python 2" \
     install_chopchop_python
-
-
-  run_step \
-    "isolated ViennaRNA commands" \
-    install_viennarna_commands
 
 
   #
@@ -598,9 +609,10 @@ run_step \
 #
 run_step \
   "CHOPCHOP source" \
-  clone_if_missing \
-  https://github.com/JokingHero/chopchop.git \
-  chopchop
+  checkout_commit \
+  "$CHOPCHOP_REPOSITORY" \
+  chopchop \
+  "$CHOPCHOP_COMMIT"
 
 
 run_step \
