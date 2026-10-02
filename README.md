@@ -13,13 +13,20 @@ explicit warnings.
 
 ## Installation
 
-The environment is split to preserve the legacy Python 2 CHOPCHOP stack:
+Two environments preserve the legacy Python 2 CHOPCHOP stack:
 
-- `env.yml`: R, pak, compilers, Bowtie, OligoArrayAux, MAFFT, and the remaining
-  command-line tools;
-- `env_chopchop.yml`: CHOPCHOP and its Python 2 dependencies;
-- `env_viennarna.yml`: ViennaRNA, exposed to the main environment by a small
-  launcher created by `install.sh`.
+- `env.yml`: R, pak, compilers, Bowtie, ViennaRNA, OligoArrayAux, and the
+  remaining command-line tools;
+- `env_chopchop.yml`: the isolated Python 2 dependencies used to run CHOPCHOP.
+
+`install.sh` checks out CHOPCHOP at a pinned commit and installs a
+`chopchop-python` launcher in the main environment. The launcher runs Python
+inside `oligo_design_chopchop`; it is not a symlink to that environment's
+interpreter.
+
+After upgrading an existing three-environment installation, the unused legacy
+environment can be removed with
+`conda env remove --name oligo_design_viennarna`.
 
 Run `./install.sh` for a complete installation. The installer uses
 `pak::pkg_install()` for CRAN/Bioconductor dependencies and explicitly targets

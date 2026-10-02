@@ -247,7 +247,7 @@ local({
                "F", "R", forward, reverse, forward, reverse, 45), "однозначный PCR")
 })
 
-# 16: indexes follow FASTA content, completeness, and successful completion.
+# 16: indexes follow FASTA content, Bowtie version, completeness, and success.
 local({
   directory <- tempfile(); dir.create(directory)
   fasta <- file.path(directory, "genome.fasta")
@@ -269,9 +269,15 @@ local({
   assets <- prepare_chopchop_assets(input)
   prepare_chopchop_assets(input)
   check(calls == 2L, "Matching indexes were rebuilt")
+  writeLines(
+    c(unname(tools::md5sum(fasta)), "bowtie=1.2.3"),
+    file.path(assets$directory, "genome.fasta.md5")
+  )
+  prepare_chopchop_assets(input)
+  check(calls == 4L, "Indexes from an older Bowtie version were reused")
   writeLines(c(">chr", "TGCA"), fasta)
   prepare_chopchop_assets(input)
-  check(calls == 4L, "Changed FASTA reused stale indexes")
+  check(calls == 6L, "Changed FASTA reused stale indexes")
   unlink(file.path(assets$directory, "genome.rev.2.ebwt"))
   fail_build <- TRUE
   expect_error(prepare_chopchop_assets(input), "interrupted index")
@@ -279,7 +285,7 @@ local({
         "Failed indexing left a success marker")
   fail_build <- FALSE
   prepare_chopchop_assets(input)
-  check(calls == 8L, "Incomplete indexing was not retried")
+  check(calls == 10L, "Incomplete indexing was not retried")
 })
 
 # 17: importing in another working directory changes no global cwd.

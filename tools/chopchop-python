@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly CHOPCHOP_ENV_NAME="oligo_design_chopchop"
+
+command -v conda >/dev/null 2>&1 || {
+  printf 'ERROR: conda is not available in PATH\n' >&2
+  exit 1
+}
+
+exec conda run --no-capture-output --name "$CHOPCHOP_ENV_NAME" python "$@"
