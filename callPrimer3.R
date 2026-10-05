@@ -1,5 +1,7 @@
+# Third-party-derived code: redistribution permission remains unresolved.
+# The DHOLE GPL-2.0-or-later grant does not cover this file; see README.md.
 #' call primer3 for a given set of DNAstringSet object
-#' Forked from https://gist.github.com/al2na/8540391
+#' Forked from https://gist.github.com/IdoBar/5e78ae7a5cc7277a04b126ce6f595d6e
 #' TODO: Add support for target amplicon region (Maybe as [] in the fasta input)
 #' @param seq: DNA template as a character string (required)
 #' @param fw_primer: optional forward (left) primer, if provided Primer3 will assess it and will try to find a suitable reverse primer. Default: NULL

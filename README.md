@@ -220,3 +220,13 @@ filtering level intentionally does not change that geometry. The default-mode
 integration requires at least one test target to produce a complete design.
 `test_screening_fixture.R` independently verifies strict selection, rejection
 of Primer3 row 1, fallback warnings, and selection of row 2.
+
+
+
+## License
+
+DHOLE's original project code, including its scripts, tests, and configuration
+files, is licensed under the GNU General Public License as published by the
+Free Software Foundation, either version 2 of the License, or (at your option)
+any later version (SPDX: `GPL-2.0-or-later`). See [LICENSE](LICENSE) for the
+full GPL version 2 text.
