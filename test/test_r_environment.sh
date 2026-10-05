@@ -22,6 +22,9 @@ stopifnot(identical(.libPaths(), normalizePath(.Library)))
 stopifnot(startsWith(normalizePath(R.home()), paste0(Sys.getenv("CONDA_PREFIX"), "/")))
 invisible(loadNamespace("rlang"))
 invisible(loadNamespace("dplyr"))
+# Exercise ICU and the downstream package that failed during installation.
+stopifnot(identical(stringi::stri_trans_tolower("ACGT", locale = "en"), "acgt"))
+stopifnot(identical(janitor::make_clean_names("Gene ID"), "gene_id"))
 stopifnot(identical(normalizePath(dirname(find.package("rlang"))), normalizePath(.Library)))
 
 # Child R processes must inherit the same isolation (e.g. package installers).
