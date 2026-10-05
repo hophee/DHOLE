@@ -1,5 +1,8 @@
 # 2PAC legacy scheme
 
+Original project code in this directory is licensed under `GPL-2.0-or-later`.
+See the [project license notice](../README.md#license) and [LICENSE](../LICENSE).
+
 ## Installation
 
 Use `../install.sh` to install most dependencies. The script is safe to rerun:
