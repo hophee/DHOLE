@@ -44,6 +44,13 @@ of OS packages, but not their reporting (see the
 The final installer check loads `rJava` and `rmelting`, initializes the JVM,
 and checks for `java` and `javac`; a failed check makes installation fail.
 
+`stringi` is installed through Conda so its compiled library and ICU runtime
+are resolved together. If an older installation fails with
+`stringi.so: libicui18n.so.75: cannot open shared object file`, update the
+repository and rerun `./install.sh` to install the compatible Conda package.
+Run `bash test/test_r_environment.sh` to check R library isolation and the
+`stringi`/`janitor` runtime after installation.
+
 Use `bash tools/run-r` in place of `Rscript` for this project. It selects
 `oligo_design`, ignores R startup files, and excludes inherited `R_LIBS*`
 paths. The installer, test runner, and MELTING package lookup use it too.

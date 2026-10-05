@@ -248,17 +248,15 @@ message(
   "Java is supplied by Conda; the final runtime check verifies the JVM."
 )
 
-result <- pak::pkg_install(
+invisible(pak::pkg_install(
   packages,
   lib = target_library,
   upgrade = FALSE,
   ask = FALSE,
   dependencies = NA
-)
+))
 
 message("pak installation completed.")
-
-print(result)
 RSCRIPT
 
   PKG_SYSREQS=false \
@@ -298,6 +296,7 @@ verify_primer_qc_dependencies() {
     target_library <- normalizePath(.Library, mustWork = TRUE)
     .libPaths(target_library)
     packages <- c(
+      "stringi",
       "argparser",
       "dplyr",
       "readr",
