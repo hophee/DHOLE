@@ -58,6 +58,13 @@ This prevents packages built for another R version in a shared user library
 from causing errors such as `rlang.so: undefined symbol: R_MakeMissingBinding`.
 `Rscript --vanilla` alone does not clear inherited library paths.
 
+Primer QC accepts a terminal GC clamp of 0–3 bases. `low_gc_clamp` (<1)
+is advisory; `high_gc_clamp` (>3) fails that QC constraint. When other ranking
+criteria are equal, pairs with fewer zero-clamp primers are preferred before
+the final Primer3-index tie-break. Full oligos, including service tails, are
+checked for dimers and secondary structures even when annealing-region QC
+fails and the pair is considered as a fallback.
+
 ## Usage
 
 ```bash

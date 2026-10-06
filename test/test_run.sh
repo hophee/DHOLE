@@ -351,6 +351,13 @@ physical_ids <- unique(na.omit(c(
   selected$pair_id[selected$reaction == "scrF_scrR"]
 )))
 selected_amplicons <- amplicons[amplicons$pair_id %in% physical_ids, , drop = FALSE]
+qc <- read.delim(file.path(target_dir, "primer_openprimer_qc.tsv"), check.names = FALSE)
+selected_qc <- qc[qc$pair_id %in% physical_ids, , drop = FALSE]
+stopifnot(all(physical_ids %in% selected_qc$pair_id))
+full_checks <- c("EVAL_self_dimerization", "EVAL_cross_dimerization", "EVAL_secondary_structure")
+stopifnot(all(full_checks %in% names(selected_qc)))
+# A failed constraint is allowed for fallback; an unevaluated one is not.
+stopifnot(!anyNA(selected_qc[, full_checks, drop = FALSE]))
 stopifnot(all(c("LF_LR", "RF_RR", "scrF_scrR") %in% selected_amplicons$reaction))
 stopifnot(all(vapply(
   c("LF_LR", "RF_RR", "scrF_scrR"),
