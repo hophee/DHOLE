@@ -237,6 +237,12 @@ of Primer3 row 1, fallback warnings, and selection of row 2.
 
 
 
+## Benchmark
+
+Run `bash benchmark/run.sh [N=10] [M=10] [seed=1]` for repeated default-level-2
+designs on random MG1655 CDS. Runtime and primer/filtering plots are saved to
+a PDF; DHOLE outputs are archived automatically. See [benchmark/README.md](benchmark/README.md).
+
 ## License
 
 DHOLE's original project code, including its scripts, tests, and configuration

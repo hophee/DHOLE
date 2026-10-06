@@ -27,6 +27,7 @@ ptarget*.fasta
 /old_descriptions/
 
 # Generated genome indexes
+/benchmark/results-*/
 *.2bit
 *.ebwt
 
