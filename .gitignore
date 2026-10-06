@@ -16,6 +16,7 @@
 !/test/test_unit.R
 !/test/test_screening_fixture.R
 !/test/test_regressions.R
+!/test/test_qc_policy.R
 
 # Private/local target-plasmid inputs
 pTarget*.fasta

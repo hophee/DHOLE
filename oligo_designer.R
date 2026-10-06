@@ -1907,6 +1907,9 @@ load_openprimer_settings <- function(
     )
   }
   settings <- openPrimeR::read_settings(profile)
+  limits <- openPrimeR::constraints(settings)
+  limits$gc_clamp <- c(min = 0, max = 3)
+  settings <- openPrimeR::`constraints<-`(settings, limits)
   required <- unique(c(
     config$openprimer_critical_annealing,
     config$openprimer_critical_full
@@ -2132,7 +2135,8 @@ format_openprimer_failures <- function(metrics, failed, constraint_limits) {
     details <- vapply(columns[violated], function(column) {
       sprintf("%s=%s (%s)", column, format_measure(values[[column]]), threshold)
     }, character(1))
-    sprintf("%s[%s]", flag, paste(details, collapse = ", "))
+    label <- if (constraint == "gc_clamp") "high_gc_clamp" else flag
+    sprintf("%s[%s]", label, paste(details, collapse = ", "))
   }, character(1), USE.NAMES = FALSE)
 }
 
@@ -2199,6 +2203,14 @@ combine_openprimer_form_results <- function(
     max(0, -min(dimer_values))
   } else 0
   metrics$abs_tm_diff <- abs(metrics$melting_temp_diff[[1]])
+  clamp_columns <- intersect(c("gc_clamp_fw", "gc_clamp_rev"), names(metrics))
+  low_clamps <- clamp_columns[vapply(clamp_columns, function(column) {
+    isTRUE(metrics[[column]][[1]] < 1)
+  }, logical(1))]
+  metrics$low_gc_clamp_count <- length(low_clamps)
+  metrics$gc_clamp_warnings <- if (length(low_clamps)) {
+    paste0("low_gc_clamp[", paste(paste0(low_clamps, "=0 (<1)"), collapse = ", "), "]")
+  } else ""
   metrics$unavailable_constraints <- ""
   metrics$skipped_constraints <- paste(
     setdiff(loaded$active_constraints, evaluated_constraints),
@@ -2216,6 +2228,8 @@ combine_openprimer_form_results <- function(
       paste0("openprimer_failed:", paste(failed_details, collapse = ","))
     },
     metrics = metrics,
+    warnings = metrics$gc_clamp_warnings[[1]],
+    low_gc_clamp_count = metrics$low_gc_clamp_count[[1]],
     penalty = metrics$penalty[[1]],
     failed_soft_constraints = metrics$openprimer_failed_soft_constraints[[1]],
     max_dimer_risk = metrics$max_dimer_risk[[1]],
@@ -2259,22 +2273,19 @@ evaluate_openprimer_pair <- function(
     annealing_constraints,
     paste0(reaction, "_annealing")
   )
-  full_result <- NULL
-  if (annealing_result$passed) {
-    full_template <- paste0(
-      full_forward,
-      paste(rep("A", 20L), collapse = ""),
-      as.character(reverseComplement(DNAString(full_reverse)))
-    )
-    full_result <- evaluate_openprimer_form(
-      full_forward,
-      full_reverse,
-      full_template,
-      loaded$settings,
-      full_constraints,
-      paste0(reaction, "_full")
-    )
-  }
+  full_template <- paste0(
+    full_forward,
+    paste(rep("A", 20L), collapse = ""),
+    as.character(reverseComplement(DNAString(full_reverse)))
+  )
+  full_result <- evaluate_openprimer_form(
+    full_forward,
+    full_reverse,
+    full_template,
+    loaded$settings,
+    full_constraints,
+    paste0(reaction, "_full")
+  )
   combine_openprimer_form_results(
     annealing_result,
     full_result,
@@ -2370,7 +2381,8 @@ evaluate_filtering_policy <- function(
     },
     if (is.null(openprimer)) "openprimer_not_evaluated" else if (
       !isTRUE(openprimer$passed)
-    ) openprimer$rejection_reason
+    ) openprimer$rejection_reason,
+    if (!is.null(openprimer)) openprimer$warnings
   ))
   warnings <- warnings[!is.na(warnings) & nzchar(warnings)]
   list(
@@ -2409,6 +2421,7 @@ select_best_primer_pair <- function(candidates) {
     "abs_tm_diff",
     "primer3_pair_penalty",
     "deleted_nt",
+    "low_gc_clamp_count",
     "primer3_index"
   )
   for (column in setdiff(rank_columns, names(candidates))) {
@@ -3493,38 +3506,35 @@ cached_openprimer_pair <- function(
     input$primer_qc_cache,
     inherits = FALSE
   )
-  full_result <- NULL
-  if (annealing_result$passed) {
-    full_constraints <- config$openprimer_critical_full
-    full_key <- paste0(
-      "openprimer_full:",
-      digest::digest(list(
-        toupper(c(full_forward, full_reverse)),
-        full_constraints,
-        input$parameters$primer3_buffer
-      ))
+  full_constraints <- config$openprimer_critical_full
+  full_key <- paste0(
+    "openprimer_full:",
+    digest::digest(list(
+      toupper(c(full_forward, full_reverse)),
+      full_constraints,
+      input$parameters$primer3_buffer
+    ))
+  )
+  if (!exists(full_key, input$primer_qc_cache, inherits = FALSE)) {
+    full_template <- paste0(
+      full_forward,
+      paste(rep("A", 20L), collapse = ""),
+      as.character(reverseComplement(DNAString(full_reverse)))
     )
-    if (!exists(full_key, input$primer_qc_cache, inherits = FALSE)) {
-      full_template <- paste0(
+    assign(
+      full_key,
+      evaluate_openprimer_form(
         full_forward,
-        paste(rep("A", 20L), collapse = ""),
-        as.character(reverseComplement(DNAString(full_reverse)))
-      )
-      assign(
-        full_key,
-        evaluate_openprimer_form(
-          full_forward,
-          full_reverse,
-          full_template,
-          loaded$settings,
-          full_constraints,
-          paste0(reaction, "_full")
-        ),
-        input$primer_qc_cache
-      )
-    }
-    full_result <- get(full_key, input$primer_qc_cache, inherits = FALSE)
+        full_reverse,
+        full_template,
+        loaded$settings,
+        full_constraints,
+        paste0(reaction, "_full")
+      ),
+      input$primer_qc_cache
+    )
   }
+  full_result <- get(full_key, input$primer_qc_cache, inherits = FALSE)
   combine_openprimer_form_results(
     annealing_result,
     full_result,
@@ -3972,6 +3982,11 @@ design_homology_arms <- function(
               `[[`,
               numeric(1),
               "penalty"
+            )),
+            low_gc_clamp_count = sum(vapply(
+              openprimer_results,
+              function(result) result$low_gc_clamp_count %||% Inf,
+              numeric(1)
             )),
             max_dimer_risk = if (length(openprimer_results)) {
               max(vapply(
@@ -4700,6 +4715,7 @@ write_design_outputs <- function(
         0L
       } else openprimer$failed_soft_constraints,
       openprimer_penalty = if (is.null(openprimer)) Inf else openprimer$penalty,
+      low_gc_clamp_count = openprimer$low_gc_clamp_count %||% Inf,
       max_dimer_risk = if (is.null(openprimer)) Inf else {
         openprimer$max_dimer_risk
       },

@@ -1,5 +1,6 @@
 #!/usr/bin/env Rscript
 source("oligo_designer.R")
+source("test/test_qc_policy.R")
 
 check <- function(value, message) {
   if (!isTRUE(value)) stop(message, call. = FALSE)
