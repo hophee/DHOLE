@@ -5,7 +5,8 @@ channels:
   - nodefaults
 
 dependencies:
-  - python=2.7
+  # Python 2.7.15 is available in the existing cf202003 channel.
+  - python=2.7.15
   - biopython=1.74
   - numpy=1.12.1
   - pandas=0.24.2

@@ -1,69 +1,19 @@
 # DHOLE
 
 DHOLE designs CRISPR-Cas9 N20 oligos, homology-arm PCR primers, screening
-primers, and an edited-genome model for bacterial CDS and ncRNA targets.
-
-Primer selection is candidate-based: Primer3 proposes up to ten pairs per
-homology arm and five screening pairs, then 2PAC applies structural rules,
-exhaustive Biostrings specificity, openPrimeR QC, and a stable lexicographic
-ranking. Three filtering levels control which primer-QC risks block selection.
-A rejected first Primer3 row no longer rejects the target. If no ideal row is
-available, the best candidate allowed by the selected level is returned with
-explicit warnings.
+primers, and edited-genome and pTarget models for bacterial CDS and ncRNA targets.
 
 ## Installation
 
-Two environments preserve the legacy Python 2 CHOPCHOP stack:
+With Conda and Git available, run from the project directory:
 
-- `env.yml`: R, pak, compilers, Bowtie, ViennaRNA, OligoArrayAux, and the
-  remaining command-line tools;
-- `env_chopchop.yml`: the isolated Python 2 dependencies used to run CHOPCHOP.
+```bash
+bash install.sh
+```
 
-`install.sh` checks out CHOPCHOP at a pinned commit and installs a
-`chopchop-python` launcher in the main environment. The launcher runs Python
-inside `oligo_design_chopchop`; it is not a symlink to that environment's
-interpreter.
-
-After upgrading an existing three-environment installation, the unused legacy
-environment can be removed with
-`conda env remove --name oligo_design_viennarna`.
-
-Run `./install.sh` for a complete installation. The installer uses
-`pak::pkg_install()` for CRAN/Bioconductor dependencies and explicitly targets
-R's `.Library` inside `oligo_design`; it does not install them into a user
-library. Missing openPrimeR constraints or executables are reported as QC
-risks. Level 3 uses the Primer3 pair ΔTm as a fallback for its temperature
-gate; it blocks selection only when that value is unavailable or exceeds the
-hard limit.
-
-Java remains required by the `rmelting` JAR behind `tools/melting-batch` and is
-installed through Conda (`openjdk`). `pak` may still report the OS package
-`java-11-openjdk-devel` as missing: `PKG_SYSREQS=false` disables installation
-of OS packages, but not their reporting (see the
-[pak configuration reference](https://pak.r-lib.org/reference/pak-config.html)).
-The final installer check loads `rJava` and `rmelting`, initializes the JVM,
-and checks for `java` and `javac`; a failed check makes installation fail.
-
-`stringi` is installed through Conda so its compiled library and ICU runtime
-are resolved together. If an older installation fails with
-`stringi.so: libicui18n.so.75: cannot open shared object file`, update the
-repository and rerun `./install.sh` to install the compatible Conda package.
-Run `bash test/test_r_environment.sh` to check R library isolation and the
-`stringi`/`janitor` runtime after installation.
-
-Use `bash tools/run-r` in place of `Rscript` for this project. It selects
-`oligo_design`, ignores R startup files, and excludes inherited `R_LIBS*`
-paths. The installer, test runner, and MELTING package lookup use it too.
-This prevents packages built for another R version in a shared user library
-from causing errors such as `rlang.so: undefined symbol: R_MakeMissingBinding`.
-`Rscript --vanilla` alone does not clear inherited library paths.
-
-Primer QC accepts a terminal GC clamp of 0–3 bases. `low_gc_clamp` (<1)
-is advisory; `high_gc_clamp` (>3) fails that QC constraint. When other ranking
-criteria are equal, pairs with fewer zero-clamp primers are preferred before
-the final Primer3-index tie-break. Full oligos, including service tails, are
-checked for dimers and secondary structures even when annealing-region QC
-fails and the pair is considered as a fallback.
+The installer creates the `oligo_design` and `oligo_design_chopchop`
+environments and installs the required tools and R packages.
+Use `bash tools/run-r` to run the project's R scripts.
 
 ## Usage
 
@@ -82,12 +32,19 @@ bash tools/run-r oligo_designer.R \
   --ncrna rna1,rna2
 ```
 
-Targets are matched first by `locus_tag`, then by `gene`. `--cds` and
-`--ncrna` accept comma- or space-separated values. Bakta TSV and GFF/GFF3
-annotations are supported. The current implementation supports one complete
-linear genome contig. Every FASTA record in pTarget and pCas is treated as a
-separate circular specificity reference, while edited-pTarget modelling
-requires exactly one pTarget record.
+Provide a single-contig genome FASTA, a Bakta TSV (`--annotation-format bakta`)
+or GFF/GFF3 (`--annotation-format gff`) annotation, and pTarget and pCas FASTA
+files. The genome is treated as linear and plasmids as circular. pTarget must
+contain exactly one record for edited-plasmid modelling.
+
+Select targets with `--cds`, `--ncrna`, or both. Targets are matched first by
+`locus_tag`, then by `gene`; lists may be comma-separated or space-separated.
+
+Each restriction site must occur once in pTarget. The selected cassette must
+start with an existing N20 followed by the protocol's 83-nt SpCas9 scaffold.
+`--ptarget-cassette-arc` selects the shortest arc by default; `forward` follows
+the input strand from `site1` to `site2`, and `reverse` follows the
+reverse-complement strand.
 
 ### Design parameters
 
@@ -112,14 +69,11 @@ requires exactly one pTarget record.
 | `--primer-max-product-size` | `2000` | Maximum counted amplicon size |
 | `--primer-max-offtarget-products` | `0` | Preferred maximum non-intended amplicons |
 
-The legacy Primer3 generation thresholds remain unchanged: primer length
-`18/21/27` nt (min/opt/max), homopolymer maximum `5`, and pair Tm difference
-maximum `8 °C`. Candidates outside the stricter openPrimeR profile remain in
-the trace and may be used as a warned fallback according to the filtering
-level. Primer3 buffer defaults
-remain 50 mM monovalent salt, 1.5 mM Mg, 0.6 mM dNTP, and 50 nM DNA.
-`run_parameters.tsv` records these values, the active constraints, their
-effective limits, package versions, and tool paths.
+For all available options, run:
+
+```bash
+bash tools/run-r oligo_designer.R --help
+```
 
 ## Selection policy
 
@@ -167,46 +121,20 @@ results/
         └── design.log
 ```
 
-The four primer QC tables preserve every evaluated binding site, amplicon,
-openPrimeR metric/`EVAL_*` result, filtering level, strict/core gate, fallback
-flag, warning, rank component, selection flag, and rejection reason.
-`design.log` records `primer_qc TRY`, `REJECTED`, `OK`, and `WARNING`.
-For every successful target, `wet_lab_report.txt` contains the complete final
-oligo set, modelled-construction names and lengths, primer Tm values, expected
-screening products for edited and unedited alleles, per-N20 distances to both
-homology arms, screening off-target counts, and selected openPrimeR quality
-metrics with readable labels. `edited_pTargets.fasta` contains one circular
-pTarget model for every selected N20. Site matching checks both orientations
-and the FASTA origin; each supplied site must occur exactly once physically.
-For palindromic sites, the shorter circular arc is treated as the cassette by
-default. Use `--ptarget-cassette-arc forward` or `reverse` when the cassette is
-the longer arc or an explicit orientation is required. `forward` means the
-input FASTA strand from `site1` to `site2`; `reverse` means the reverse-
-complement strand from `site1` to `site2`.
+`WetLab/<target>_results/` contains the final oligos, edited genome and pTarget
+models, predicted PCR products, and a wet-lab report. One edited pTarget and
+one sgRNA-cassette PCR product are provided per selected N20. PCR outputs also
+include both homology arms and screening products for the original and edited
+genomes. The report lists primer Tm values, product lengths, N20-to-arm
+distances, and QC results.
 
-`pcr_products.tsv` and the WetLab report contain one sgRNA-cassette PCR product
-per N20, both homology-arm products, and screening products from the original
-and edited genomes. Every row records its template location, product length,
-full primer names, PCR simulation conditions, and sequence. Products are
-generated by `DECIPHER::AmplifyDNA` with the complete service-tailed primers.
-The restriction sites only delimit the cassette replaced in the edited-pTarget
-model; there is no independent cassette-length threshold such as 59 nt. For
-sgRNA-primer generation, the selected cassette must start with an existing N20
-followed by the standard 83-nt SpCas9 scaffold used by the protocol.
-Primer-binding sequences are taken
-from the two ends of that scaffold, independently of any sequence between the
-scaffold and `site2`. Non-template 5′ assembly tails are added separately and
-are never searched for in the input plasmid. The complete binding pair must
-define exactly one scaffold PCR product on the circular pTarget.
-Because long 5-prime tails do not anneal during the initial cycle, DECIPHER is
-given the post-first-cycle template in which those tails have been incorporated.
-The reported location always refers to the original biological template.
+`TechReport/` contains the design summary and run parameters. Per-target tables
+record primer binding sites, predicted amplicons, QC metrics, candidate rankings,
+and selection decisions; `design.log` records processing details.
 
-WetLab output is created only after homology and screening pairs pass the
-non-relaxable gates of the selected level. A fallback is marked in command
-output, `design.log`, `report.tsv`, `primer_pair_ranking.tsv`, and
-`wet_lab_report.txt`. Failed targets keep their technical trace and `error.txt`;
-other targets continue.
+WetLab files are produced for successful targets. Designs using fallback
+candidates are marked in the reports. Failed targets retain technical reports
+and `error.txt`; processing continues for the remaining targets.
 
 Run tests with:
 
@@ -215,11 +143,6 @@ bash test/test_r_environment.sh
 bash tools/run-r test/test_unit.R
 bash test/test_run.sh
 ```
-
-`test_run.sh` prints stage names, statuses, and durations. Full command output is
-written to the timestamped log shown at startup; use `--verbose` to mirror it
-to the console as well. A successful integration that uses QC fallbacks or an
-expected target rejection is reported as `PASS WITH WARNINGS`.
 
 ### QC integration baseline
 

@@ -8,6 +8,7 @@
 
 # Local archival/work directory
 /tempo/
+/supplementary/
 /WORKING_NOTES.md
 /problems.md
 /test/*
