@@ -8,7 +8,8 @@ assert_true <- function(value, message) {
   }
 }
 
-test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slack = 200L) {
+test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slack = 200L,
+                                   custom_sequences = FALSE) {
   target_dir <- tempfile("2pac-screening-fixture-")
   dir.create(target_dir)
   on.exit(unlink(target_dir, recursive = TRUE), add = TRUE)
@@ -209,12 +210,20 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
   substr(genome_sequence, 1231L, 1250L) <- reverse_complement_string(
     "CGTACGATCGTAGCATCGAC"
   )
+  sequence_settings <- if (custom_sequences) {
+    sgrna_sequence_settings(
+      paste0(substr(SGRNA_SCAFFOLD, 1L, 45L), "ACGTAC", substr(SGRNA_SCAFFOLD, 46L, 83L)),
+      forward = substr(SGRNA_SCAFFOLD, 1L, 30L),
+      reverse = reverse_complement_string(substr(SGRNA_SCAFFOLD, 59L, 83L)),
+      overhang = "TCGATGACCTGA"
+    )
+  } else sgrna_sequence_settings()
   ptarget_cassette <- paste0(
     "ACGTACGTACGTACGTACGT",
-    SGRNA_SCAFFOLD,
+    sequence_settings$sgrna_scaffold,
     "GAATTCTCTAGAGTCGAC"
   )
-  ptarget_annealing <- derive_sgrna_annealing(ptarget_cassette)
+  ptarget_annealing <- derive_sgrna_annealing(ptarget_cassette, sequence_settings)
   input <- list(
     genome = DNAString(genome_sequence),
     genome_reference_id = "fixture_genome",
@@ -240,6 +249,10 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
       sgrna_scaffold = ptarget_annealing$scaffold,
       sgrna_forward_annealing = ptarget_annealing$forward,
       sgrna_reverse_annealing = ptarget_annealing$reverse,
+      sgrna_reverse_overhang = sequence_settings$sgrna_reverse_overhang,
+      sgrna_product_overlap = sequence_settings$sgrna_product_overlap,
+      bridge_sequence = if (custom_sequences) "GACTACGATCGTACGA" else DEFAULT_BRIDGE_SEQUENCE,
+      n20_mid_closeness_max = 0.18,
       sgrna_annealing_temp_c = 60,
       threads = 1L, primer3_generation = utils::modifyList(
         primer3_generation_defaults(), list(screening_product_slack = slack)),
@@ -333,9 +346,9 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
     result$wet_lab$pcr_products
   )
 
-  # Independently specified deletion: 501..700. Keep the current CDS bridge
-  # (13 nt); its frame rule is a separate issue from genome assembly.
-  genomic_bridge <- if (strand == "+") "ATGACTGCCCGCA" else "TGCGGGCAGTCAT"
+  # Independently specified 200-nt deletion requires a 14-nt bridge in both cases.
+  expected_bridge <- if (custom_sequences) "GACTACGATCGTAC" else "ATGACTGCCCGCAA"
+  genomic_bridge <- if (strand == "+") expected_bridge else reverse_complement_string(expected_bridge)
   expected_genome <- paste0(
     substr(genome_sequence, 1L, 500L),
     genomic_bridge,
@@ -346,26 +359,26 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
     assert_true(
       identical(names(edited), "edited_genome") &&
         identical(unname(as.character(edited)), expected_genome) &&
-        width(edited)[[1]] == 1813L,
+        width(edited)[[1]] == 1814L,
       sprintf("Edited genome (%s) must preserve all bases outside 501..700", strand)
     )
   }
   assert_true(
     identical(unname(as.integer(result$wet_lab$screening_product_sizes)),
-              c(1241L, 1054L)),
-    "Screening sizes must reflect only the 200-nt deletion and 13-nt insertion"
+              c(1241L, 1055L)),
+    "Screening sizes must reflect only the 200-nt deletion and 14-nt insertion"
   )
-  expected_screening <- substr(expected_genome, 10L, 1063L)
+  expected_screening <- substr(expected_genome, 10L, 1064L)
   assert_true(
     identical(result$wet_lab$pcr_products$sequence[
       result$wet_lab$pcr_products$name == "screening_edited_genome"
     ], expected_screening),
     "Edited screening PCR differs from the independently specified allele"
   )
-  donor <- paste0(left_template, "ATGACTGCCCGCA", right_template)
+  donor <- paste0(left_template, expected_bridge, right_template)
   genomic_donor <- if (strand == "+") donor else reverse_complement_string(donor)
   assert_true(
-    identical(substr(expected_genome, 201L, 913L), genomic_donor) &&
+    identical(substr(expected_genome, 201L, 914L), genomic_donor) &&
       all(grepl(donor, as.character(result$wet_lab$edited_ptargets), fixed = TRUE)),
     "Edited allele and pTarget must contain the same complete donor junction"
   )
@@ -414,13 +427,19 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
     "Screening TRY/REJECTED/OK events are incomplete"
   )
   report <- readLines(file.path(target_dir, "report.tsv"))
+  assert_true(all(c(
+    paste("effective_bridge", expected_bridge, sep = "\t"),
+    "effective_bridge_length\t14",
+    paste("bridge_trimmed_nt", if (custom_sequences) 2L else 1L, sep = "\t"),
+    paste("genomic_bridge", genomic_bridge, sep = "\t")
+  ) %in% report), "Report does not record the actual bridge")
   assert_true(
     any(report == paste0("screening_pair_id\t", expected_pair_id)),
     "report.tsv lacks the selected screening pair ID"
   )
   assert_true(
     all(c("screening_unsuccessful_insertion_bp\t1241",
-          "screening_successful_insertion_bp\t1054") %in% report),
+          "screening_successful_insertion_bp\t1055") %in% report),
     "TechReport must contain the independently expected screening sizes"
   )
   assert_true(
@@ -467,7 +486,11 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
   ]
   assert_true(
     length(sgrna_product) == 1L &&
-      endsWith(sgrna_product, SGRNA_PRODUCT_OVERLAP),
+      identical(sgrna_product, paste0(
+        "ACG", input$parameters$site1,
+        substr(selected$table$target_sequence[[1]], 1L, 20L),
+        sequence_settings$sgrna_scaffold, sequence_settings$sgrna_product_overlap
+      )),
     "sgRNA PCR product lacks the reverse-primer assembly tail"
   )
   screening_products <- result$wet_lab$pcr_products[
@@ -499,7 +522,7 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
   )
   assert_true(
     all(c("Без успешного нокаута (исходный аллель), п.н.\t1241",
-          "С успешным нокаутом (редактированный аллель), п.н.\t1054") %in%
+          "С успешным нокаутом (редактированный аллель), п.н.\t1055") %in%
         wet_lab_report),
     "WetLab report must contain the independently expected screening sizes"
   )
@@ -539,6 +562,8 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
 
 test_screening_fixture("+")
 test_screening_fixture("-")
+test_screening_fixture("+", custom_sequences = TRUE)
+test_screening_fixture("-", custom_sequences = TRUE)
 test_screening_fixture("+", retry = TRUE)
 test_screening_fixture("+", fallback = TRUE, slack = 2000L)
 

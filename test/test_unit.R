@@ -36,6 +36,71 @@ base_args <- c(
 )
 
 defaults <- parse_designer_args(base_args)
+assert_true(defaults$bridge_sequence == "ATGACTGCCCGCAAG" &&
+  defaults$n20_mid_closeness_max == 0.18 &&
+  defaults$n20_arm_min_distance == 40L &&
+  identical(defaults[names(sgrna_sequence_settings())], sgrna_sequence_settings()),
+  "Service sequence or N20 defaults changed")
+custom_sequences <- parse_designer_args(c(base_args,
+  "--bridge-sequence", "acgtacgtacgtacgt",
+  "--sgrna-scaffold", tolower(paste0(SGRNA_SCAFFOLD, "ACGT")),
+  "--sgrna-reverse-overhang", "tgcact",
+  "--n20-mid-closeness-max", "0", "--n20-arm-min-distance", "17", "--cds-fs"))
+assert_true(custom_sequences$bridge_sequence == "ACGTACGTACGTACGT" &&
+  custom_sequences$sgrna_forward_annealing == SGRNA_FORWARD_ANNEALING &&
+  custom_sequences$sgrna_reverse_annealing == reverse_complement_string(
+    substr(custom_sequences$sgrna_scaffold, 65L, 87L)) &&
+  custom_sequences$sgrna_reverse_overhang == "TGCACT" &&
+  custom_sequences$sgrna_product_overlap == "AGTGCA" &&
+  custom_sequences$cds_fs && custom_sequences$n20_arm_min_distance == 17L &&
+  custom_sequences$n20_mid_closeness_max == 0,
+  "Custom sequence normalization or independent structural settings failed")
+for (argument in c("--bridge-sequence", "--sgrna-scaffold",
+                   "--sgrna-forward-annealing", "--sgrna-reverse-annealing",
+                   "--sgrna-reverse-overhang")) {
+  for (invalid in c("", "ACGN", "ACGU")) {
+    assert_error(parse_designer_args(c(base_args, argument, invalid)), "A/C/G/T")
+  }
+}
+assert_error(parse_designer_args(c(base_args, "--bridge-sequence", "AC")), "3 нт")
+for (invalid in c("-0.1", "Inf", "NaN")) {
+  assert_error(parse_designer_args(c(base_args, "--n20-mid-closeness-max", invalid)),
+               "конечным неотрицательным")
+}
+short_scaffold <- "ACGATTCGAGCTAGTCGATG"
+assert_error(parse_designer_args(c(base_args, "--sgrna-scaffold", short_scaffold)),
+             "--sgrna-forward-annealing явно")
+assert_error(parse_designer_args(c(base_args, "--sgrna-scaffold", short_scaffold,
+  "--sgrna-forward-annealing", "acgattcg")), "--sgrna-reverse-annealing явно")
+short_settings <- parse_designer_args(c(base_args, "--sgrna-scaffold", short_scaffold,
+  "--sgrna-forward-annealing", "acgattcg", "--sgrna-reverse-annealing", "catcgact"))
+short_plasmid <- paste0("ACTAGT", strrep("C", 20L), short_scaffold, "CTGCAG", strrep("A", 100L))
+for (plasmid in c(short_plasmid, reverse_complement_string(short_plasmid),
+  paste0(substr(short_plasmid, 32L, nchar(short_plasmid)), substr(short_plasmid, 1L, 31L)))) {
+  inspected <- inspect_sgrna_ptarget(plasmid, "ACTAGT", "CTGCAG", parameters = short_settings)
+  assert_true(as.character(inspected$template$sequence) == short_scaffold,
+              "Explicit annealing arms did not support a short custom scaffold")
+}
+assert_error(inspect_sgrna_ptarget(short_plasmid, "ACTAGT", "CTGCAG"), "--sgrna-scaffold")
+wrong_arms <- short_settings
+wrong_arms$sgrna_forward_annealing <- substr(short_scaffold, 2L, 8L)
+assert_error(inspect_sgrna_ptarget(short_plasmid, "ACTAGT", "CTGCAG", parameters = wrong_arms),
+             "не ограничивают выбранный")
+ambiguous_plasmid <- paste0(short_plasmid, short_scaffold, strrep("A", 100L))
+assert_error(inspect_sgrna_ptarget(ambiguous_plasmid, "ACTAGT", "CTGCAG", parameters = short_settings),
+             "найдено: 4")
+for (bridge in c("ACG", "ACGT", "ACGTA", DEFAULT_BRIDGE_SEQUENCE,
+                 "ACGTACGTACGTACGT", "ACGTACGTACGTACGTA")) {
+  for (deleted in 0:8) {
+    effective <- design_bridge("cds", deleted, bridge)
+    trim <- nchar(bridge) - nchar(effective)
+    assert_true(nchar(effective) > 0L && trim %in% 0:2 &&
+      startsWith(bridge, effective) && (nchar(effective) - deleted) %% 3L == 0L,
+      "CDS bridge must be the longest nonempty prefix preserving phase")
+    assert_true(design_bridge("ncrna", deleted, bridge) == bridge,
+                "ncRNA bridge must remain complete")
+  }
+}
 assert_true(
   defaults$annotation_format == "gff",
   "annotation default is not gff"
@@ -181,6 +246,23 @@ write_tsv(
 filtered <- filter_grnas(grna_path, feature, "ncrna", c(0L, 2L))
 assert_true(nrow(filtered) == 1L, "MM/self-complementarity filtering failed")
 assert_true(filtered$strand[[1]] == "+", "Unexpected N20 survived filtering")
+local({
+  path <- tempfile(fileext = ".tsv")
+  on.exit(unlink(path))
+  write_tsv(data.frame(
+    Genomic.Location = paste0("genome:", c(101L, 150L, 159L, 160L, 200L)),
+    Target.sequence = strrep("A", 23L), Strand = "+", Self.complementarity = 0L, MM0 = 0L
+  ), path)
+  feature <- list(start = 101L, end = 200L, length = 100L)
+  pool <- function(class = "cds", limit = 0.18) {
+    filter_grnas(path, feature, class, 0L, n20_mid_closeness_max = limit)
+  }
+  assert_true(identical(pool()$genomic_start, c(150, 159)) &&
+    identical(pool(limit = 0.19)$genomic_start, c(150, 159, 160)) &&
+    nrow(pool(limit = 0)) == 5L && nrow(pool("ncrna", 0.01)) == 5L &&
+    !is.unsorted(pool(limit = 0)$mid_closeness),
+    "mid_closeness threshold, inclusive boundary, disabling or ordering changed")
+})
 assert_error(
   filter_grnas(grna_path, feature, "ncrna", c(0L, 1L, 2L)),
   "только 2 колонок MM"

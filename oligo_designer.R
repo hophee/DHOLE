@@ -41,8 +41,7 @@ SGRNA_SCAFFOLD <- paste0(
   "AGTCCGTTATCAACTTGAAAAAGT",
   "GGCACCGAGTCGGTGCTTTTTTT"
 )
-# These scaffold-end binding arms reproduce the pTarget primers validated by
-# old_scheme; only their 5-prime guide/assembly tails vary between designs.
+# Default scaffold-end binding arms retained from old_scheme.
 SGRNA_FORWARD_ANNEALING <- substr(SGRNA_SCAFFOLD, 1L, 36L)
 SGRNA_REVERSE_ANNEALING <- reverse_complement_string(substr(
   SGRNA_SCAFFOLD,
@@ -52,15 +51,20 @@ SGRNA_REVERSE_ANNEALING <- reverse_complement_string(substr(
 SGRNA_REVERSE_OVERHANG <- "AGTTGACGCT"
 SGRNA_PRODUCT_OVERLAP <- reverse_complement_string(SGRNA_REVERSE_OVERHANG)
 BOWTIE_INDEX_VERSION <- "1.3.1"
+DEFAULT_BRIDGE_SEQUENCE <- "ATGACTGCCCGCAAG"
 
-design_bridge <- function(design_class, deleted_nt) {
-  substr("ATGACTGCCCGCAAG", 1L,
-         if (design_class == "cds") 15L - deleted_nt %% 3L else 15L)
+design_bridge <- function(design_class, deleted_nt,
+                          bridge_sequence = DEFAULT_BRIDGE_SEQUENCE) {
+  trim <- if (design_class == "cds") {
+    (nchar(bridge_sequence) - deleted_nt) %% 3L
+  } else 0L
+  substr(bridge_sequence, 1L, nchar(bridge_sequence) - trim)
 }
 
-homology_primer_pair <- function(primer_row, side, bridge, site2) {
+homology_primer_pair <- function(primer_row, side, bridge, site2,
+                                sgrna_product_overlap = SGRNA_PRODUCT_OVERLAP) {
   c(
-    paste0(if (side == "left") SGRNA_PRODUCT_OVERLAP else bridge,
+    paste0(if (side == "left") sgrna_product_overlap else bridge,
            primer_row$PRIMER_LEFT_SEQUENCE[[1]]),
     paste0(if (side == "left") reverse_complement_string(bridge) else {
       paste0("ACG", reverse_complement_string(site2))
@@ -194,29 +198,61 @@ find_oriented_restriction_pair <- function(
   candidates[[which.min(lengths)]]
 }
 
-derive_sgrna_annealing <- function(cassette) {
+sgrna_sequence_settings <- function(
+  scaffold = SGRNA_SCAFFOLD,
+  forward = NULL,
+  reverse = NULL,
+  overhang = SGRNA_REVERSE_OVERHANG
+) {
+  scaffold <- normalize_restriction_site(scaffold, "--sgrna-scaffold")
+  derive_arm <- function(sequence, size, argument, reverse = FALSE) {
+    if (is.null(sequence)) {
+      if (nchar(scaffold) < size) {
+        stop(sprintf(
+          "Каркас короче %d нт; задайте %s явно", size, argument
+        ), call. = FALSE)
+      }
+      sequence <- if (reverse) {
+        reverse_complement_string(substr(
+          scaffold, nchar(scaffold) - size + 1L, nchar(scaffold)
+        ))
+      } else substr(scaffold, 1L, size)
+    }
+    normalize_restriction_site(sequence, argument)
+  }
+  overhang <- normalize_restriction_site(overhang, "--sgrna-reverse-overhang")
+  list(
+    sgrna_scaffold = scaffold,
+    sgrna_forward_annealing = derive_arm(forward, 36L, "--sgrna-forward-annealing"),
+    sgrna_reverse_annealing = derive_arm(reverse, 23L, "--sgrna-reverse-annealing", TRUE),
+    sgrna_reverse_overhang = overhang,
+    sgrna_product_overlap = reverse_complement_string(overhang)
+  )
+}
+
+derive_sgrna_annealing <- function(cassette, parameters = sgrna_sequence_settings()) {
   cassette <- toupper(as.character(cassette))
   if (length(cassette) != 1L || !nzchar(cassette) ||
       !grepl("^[ACGT]+$", cassette)) {
     stop("Кассета pTarget должна содержать только A/C/G/T", call. = FALSE)
   }
   scaffold_start <- SGRNA_GUIDE_LENGTH + 1L
-  scaffold_end <- SGRNA_GUIDE_LENGTH + nchar(SGRNA_SCAFFOLD)
+  scaffold_end <- SGRNA_GUIDE_LENGTH + nchar(parameters$sgrna_scaffold)
   if (nchar(cassette) < scaffold_end ||
-      substr(cassette, scaffold_start, scaffold_end) != SGRNA_SCAFFOLD) {
+      substr(cassette, scaffold_start, scaffold_end) != parameters$sgrna_scaffold) {
     stop(
       paste(
         "pTarget несовместима со схемой sgRNA:",
-        "сразу после site1 ожидаются N20 и стандартный SpCas9 scaffold"
+        "сразу после site1 ожидаются N20 и выбранный --sgrna-scaffold"
       ),
       call. = FALSE
     )
   }
   list(
     original_n20 = substr(cassette, 1L, SGRNA_GUIDE_LENGTH),
-    scaffold = SGRNA_SCAFFOLD,
-    forward = SGRNA_FORWARD_ANNEALING,
-    reverse = SGRNA_REVERSE_ANNEALING
+    scaffold = parameters$sgrna_scaffold,
+    forward = parameters$sgrna_forward_annealing,
+    reverse = parameters$sgrna_reverse_annealing
   )
 }
 
@@ -286,10 +322,11 @@ inspect_sgrna_ptarget <- function(
   site1,
   site2,
   cassette_arc = "shortest",
-  max_product_size = nchar(as.character(plasmid))
+  max_product_size = nchar(as.character(plasmid)),
+  parameters = sgrna_sequence_settings()
 ) {
   pair <- find_oriented_restriction_pair(plasmid, site1, site2, cassette_arc)
-  annealing <- derive_sgrna_annealing(pair$cassette)
+  annealing <- derive_sgrna_annealing(pair$cassette, parameters)
   template <- locate_circular_pcr_template(
     plasmid,
     annealing$forward,
@@ -301,7 +338,7 @@ inspect_sgrna_ptarget <- function(
     stop(
       paste(
         "pTarget несовместима со схемой sgRNA:",
-        "участки отжига не ограничивают ожидаемый SpCas9 scaffold"
+        "участки отжига не ограничивают выбранный --sgrna-scaffold"
       ),
       call. = FALSE
     )
@@ -318,14 +355,15 @@ model_edited_ptargets <- function(
   site1 = "ACTAGT",
   site2 = "CTGCAG",
   name_prefix = "pTarget",
-  cassette_arc = "shortest"
+  cassette_arc = "shortest",
+  sgrna_product_overlap = SGRNA_PRODUCT_OVERLAP
 ) {
   site1 <- normalize_restriction_site(site1, "site1")
   site2 <- normalize_restriction_site(site2, "site2")
   sgrna_products <- toupper(as.character(sgrna_products))
   left_arm_product <- toupper(as.character(left_arm_product))
   right_arm_product <- toupper(as.character(right_arm_product))
-  left_overlap <- SGRNA_PRODUCT_OVERLAP
+  left_overlap <- sgrna_product_overlap
   if (
     !length(sgrna_products) ||
       length(left_arm_product) != 1L ||
@@ -477,7 +515,8 @@ model_design_pcr_products <- function(
     input$parameters$site1,
     input$parameters$site2,
     input$parameters$ptarget_cassette_arc,
-    max_product_size
+    max_product_size,
+    input$parameters
   )
   sgrna_template <- as.character(ptarget$template$sequence)
   if (nchar(sgrna_template) > max_product_size) {
@@ -749,6 +788,36 @@ parse_designer_args <- function(args) {
   )
   parser <- add_argument(
     parser,
+    "--bridge-sequence",
+    help = "Bridge DNA sequence (A/C/G/T, at least 3 nt); CDS trims up to 2 nt to preserve phase",
+    default = DEFAULT_BRIDGE_SEQUENCE
+  )
+  parser <- add_argument(
+    parser,
+    "--sgrna-scaffold",
+    help = "Constant sgRNA DNA sequence without N20; must match the pTarget cassette",
+    default = SGRNA_SCAFFOLD
+  )
+  parser <- add_argument(
+    parser,
+    "--sgrna-forward-annealing",
+    help = "sgRNA forward annealing sequence; defaults to the first 36 nt of the scaffold",
+    type = "character"
+  )
+  parser <- add_argument(
+    parser,
+    "--sgrna-reverse-annealing",
+    help = "sgRNA reverse annealing sequence; defaults to reverse complement of the last 23 scaffold nt",
+    type = "character"
+  )
+  parser <- add_argument(
+    parser,
+    "--sgrna-reverse-overhang",
+    help = "sgRNA reverse primer 5-prime tail; its reverse complement overlaps the left arm",
+    default = SGRNA_REVERSE_OVERHANG
+  )
+  parser <- add_argument(
+    parser,
     "--sgrna-annealing-temp-c",
     help = "Annealing temperature for the sgRNA-cassette PCR",
     default = 60,
@@ -825,6 +894,13 @@ parse_designer_args <- function(args) {
     "--n20-offtarget",
     help = "Comma-separated maximum values for MM0, MM1, ...",
     default = "0"
+  )
+  parser <- add_argument(
+    parser,
+    "--n20-mid-closeness-max",
+    help = "Maximum N20 mid_closeness for CDS (inclusive); 0 disables this filter; ncRNA is unfiltered",
+    default = 0.18,
+    type = "double"
   )
   parser <- add_argument(
     parser,
@@ -1135,7 +1211,23 @@ parse_designer_args <- function(args) {
     stop("Некорректные параметры primer specificity QC", call. = FALSE)
   }
 
-  values <- list(
+  bridge_sequence <- normalize_restriction_site(parsed$bridge_sequence, "--bridge-sequence")
+  if (nchar(bridge_sequence) < 3L) {
+    stop("--bridge-sequence должен содержать не менее 3 нт", call. = FALSE)
+  }
+  sgrna_settings <- sgrna_sequence_settings(
+    parsed$sgrna_scaffold,
+    if (is.na(parsed$sgrna_forward_annealing)) NULL else parsed$sgrna_forward_annealing,
+    if (is.na(parsed$sgrna_reverse_annealing)) NULL else parsed$sgrna_reverse_annealing,
+    parsed$sgrna_reverse_overhang
+  )
+  n20_mid_closeness_max <- as.numeric(parsed$n20_mid_closeness_max)
+  if (length(n20_mid_closeness_max) != 1L ||
+      !is.finite(n20_mid_closeness_max) || n20_mid_closeness_max < 0) {
+    stop("--n20-mid-closeness-max должен быть конечным неотрицательным числом", call. = FALSE)
+  }
+
+  values <- c(sgrna_settings, list(
     genome = normalize_scalar(parsed$genome),
     genome_annotation = normalize_scalar(parsed$genome_annotation),
     target_plasmid = normalize_scalar(parsed$target_plasmid),
@@ -1143,6 +1235,8 @@ parse_designer_args <- function(args) {
     site2 = normalize_restriction_site(parsed$site2, "--site2"),
     ptarget_cassette_arc = ptarget_cassette_arc,
     sgrna_annealing_temp_c = sgrna_annealing_temp_c,
+    bridge_sequence = bridge_sequence,
+    n20_mid_closeness_max = n20_mid_closeness_max,
     output_dir = normalize_scalar(parsed$output_dir),
     cds = normalize_targets(parsed$cds),
     ncrna = normalize_targets(parsed$ncrna),
@@ -1167,7 +1261,7 @@ parse_designer_args <- function(args) {
       expected_size_tolerance = parsed$primer_expected_size_tolerance,
       hard_max_tm_diff = parsed$primer_hard_max_tm_diff
     )))
-  )
+  ))
   if (values$site1 == values$site2) {
     stop("--site1 и --site2 должны быть разными", call. = FALSE)
   }
@@ -2537,6 +2631,10 @@ write_run_parameters <- function(input, targets, path) {
       input$parameters$sgrna_forward_annealing,
     ptarget_sgrna_reverse_annealing =
       input$parameters$sgrna_reverse_annealing,
+    sgrna_reverse_overhang = input$parameters$sgrna_reverse_overhang,
+    sgrna_product_overlap = input$parameters$sgrna_product_overlap,
+    bridge_sequence = input$parameters$bridge_sequence,
+    n20_mid_closeness_max = input$parameters$n20_mid_closeness_max,
     ptarget_sgrna_annealing_temp_c =
       input$parameters$sgrna_annealing_temp_c,
     cas_plasmid_file = if (is.null(input$cas_plasmid)) NA_character_ else {
@@ -2660,7 +2758,8 @@ make_design_input <- function(cli) {
     cli$site1,
     cli$site2,
     cli$ptarget_cassette_arc,
-    cli$primer_qc$max_product_size
+    cli$primer_qc$max_product_size,
+    cli
   )
   input <- list(
     genome_path = cli$genome[[1]],
@@ -2698,6 +2797,10 @@ make_design_input <- function(cli) {
       sgrna_scaffold = ptarget$annealing$scaffold,
       sgrna_forward_annealing = ptarget$annealing$forward,
       sgrna_reverse_annealing = ptarget$annealing$reverse,
+      sgrna_reverse_overhang = cli$sgrna_reverse_overhang,
+      sgrna_product_overlap = cli$sgrna_product_overlap,
+      bridge_sequence = cli$bridge_sequence,
+      n20_mid_closeness_max = cli$n20_mid_closeness_max,
       sgrna_annealing_temp_c = cli$sgrna_annealing_temp_c,
       cds_fs = cli$cds_fs,
       ncrna_fs = cli$ncrna_fs,
@@ -2921,7 +3024,8 @@ filter_grnas <- function(
   feature,
   design_class,
   offtarget_thresholds,
-  genome = NULL
+  genome = NULL,
+  n20_mid_closeness_max = 0.18
 ) {
   grnas <- read_tsv(table_path, show_col_types = FALSE) |>
     janitor::clean_names()
@@ -3002,8 +3106,8 @@ filter_grnas <- function(
       stop("Последовательность N20/PAM CHOPCHOP не совпадает с геномом", call. = FALSE)
     }
   }
-  if (design_class == "cds") {
-    grnas <- filter(grnas, mid_closeness <= 0.18)
+  if (design_class == "cds" && n20_mid_closeness_max > 0) {
+    grnas <- filter(grnas, mid_closeness <= n20_mid_closeness_max)
   }
   arrange(grnas, mid_closeness)
 }
@@ -3782,7 +3886,7 @@ design_homology_arms <- function(
             return(invisible(NULL))
           }
           primer_row <- positions[[side]][primer_index, , drop = FALSE]
-          bridge <- design_bridge(design_class, bridge_mod)
+          bridge <- design_bridge(design_class, bridge_mod, input$parameters$bridge_sequence)
           reaction <- if (side == "left") "LF_LR" else "RF_RR"
           physical_pair_id <- sprintf(
             "n20_%03d_attempt_%03d_%s_%02d_B%d",
@@ -3801,7 +3905,8 @@ design_homology_arms <- function(
             )
           }
           full_primers <- homology_primer_pair(
-            primer_row, side, bridge, input$parameters$site2
+            primer_row, side, bridge, input$parameters$site2,
+            input$parameters$sgrna_product_overlap
           )
           result <- evaluate_candidate_reaction(
             input, primer_row, full_primers[[1]], full_primers[[2]],
@@ -4575,7 +4680,8 @@ write_design_outputs <- function(
   }, add = TRUE)
   pair <- arms$pair
   gap <- arms$ticks[[3]] - arms$ticks[[2]] - 1L
-  bridge <- design_bridge(design_class, gap)
+  bridge <- design_bridge(design_class, gap, input$parameters$bridge_sequence)
+  bridge_trimmed_nt <- nchar(input$parameters$bridge_sequence) - nchar(bridge)
   restrict_frame_shift <- if (design_class == "cds") {
     input$parameters$cds_fs
   } else {
@@ -4587,7 +4693,7 @@ write_design_outputs <- function(
     "not_restricted"
   }
   if (design_class == "cds") {
-    if (!restrict_frame_shift && gap %% 3 != 0) {
+    if (bridge_trimmed_nt > 0L) {
       frame_status <- sprintf("bridge shortened to %d nt", nchar(bridge))
     }
   }
@@ -4609,15 +4715,17 @@ write_design_outputs <- function(
   ))
   names(sgrnas) <- paste0(feature$display_name, "_sgF", seq_along(sgrnas))
   arm_primers <- DNAStringSet(c(
-    homology_primer_pair(pair[1, , drop = FALSE], "left", bridge, input$parameters$site2),
-    homology_primer_pair(pair[2, , drop = FALSE], "right", bridge, input$parameters$site2)
+    homology_primer_pair(pair[1, , drop = FALSE], "left", bridge, input$parameters$site2,
+                        input$parameters$sgrna_product_overlap),
+    homology_primer_pair(pair[2, , drop = FALSE], "right", bridge, input$parameters$site2,
+                        input$parameters$sgrna_product_overlap)
   ))
   names(arm_primers) <- paste0(
     feature$display_name,
     c("_LF", "_LR", "_RF", "_RR")
   )
   sgrna_reverse <- DNAStringSet(paste0(
-    SGRNA_REVERSE_OVERHANG,
+    input$parameters$sgrna_reverse_overhang,
     input$parameters$sgrna_reverse_annealing
   ))
   names(sgrna_reverse) <- paste0(feature$display_name, "_sgR")
@@ -4814,7 +4922,8 @@ write_design_outputs <- function(
     input$parameters$site1,
     input$parameters$site2,
     feature$display_name,
-    input$parameters$ptarget_cassette_arc
+    input$parameters$ptarget_cassette_arc,
+    input$parameters$sgrna_product_overlap
   )
   writeXStringSet(
     edited_ptargets$sequences,
@@ -5018,6 +5127,12 @@ write_design_outputs <- function(
         sep = "\t"
       ),
       paste("deleted_nt", gap, sep = "\t"),
+      paste("bridge_sequence", input$parameters$bridge_sequence, sep = "\t"),
+      paste("effective_bridge", bridge, sep = "\t"),
+      paste("effective_bridge_length", nchar(bridge), sep = "\t"),
+      paste("bridge_trimmed_nt", bridge_trimmed_nt, sep = "\t"),
+      paste("genomic_bridge", if (feature$strand == "-") bridge_rc else bridge, sep = "\t"),
+      paste("n20_mid_closeness_max", input$parameters$n20_mid_closeness_max, sep = "\t"),
       paste("frame_status", frame_status, sep = "\t"),
       paste("left_arm_nt", length(final_arms[[1]]), sep = "\t"),
       paste("right_arm_nt", length(final_arms[[2]]), sep = "\t"),
@@ -5368,7 +5483,8 @@ design_target <- function(input, genome_name, gene_name, design_class) {
           feature,
           design_class,
           input$parameters$n20_offtarget,
-          input$genome
+          input$genome,
+          input$parameters$n20_mid_closeness_max
         )
       )
       grnas <- run_design_stage(

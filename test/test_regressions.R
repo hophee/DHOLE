@@ -122,6 +122,31 @@ local({
   cli$chopchop_python <- custom_python
   check(identical(make_design_input(cli)$tools$chopchop_python, custom_python),
         "Explicit CHOPCHOP interpreter path was overridden")
+  custom_settings <- sgrna_sequence_settings(paste0("AC", SGRNA_SCAFFOLD), overhang = "ACGTCG")
+  cli <- utils::modifyList(cli, c(custom_settings, list(
+    bridge_sequence = "ACGTCGATCG", n20_mid_closeness_max = 0,
+    n20_arm_min_distance = 17L, cds_fs = TRUE
+  )))
+  writeLines(c(">target", paste0("ACTAGT", strrep("C", 20L),
+    custom_settings$sgrna_scaffold, "CTGCAG", backbone)), target)
+  input <- make_design_input(cli)
+  keys <- c(names(custom_settings), "bridge_sequence", "n20_mid_closeness_max",
+            "n20_arm_min_distance", "cds_fs")
+  check(identical(input$parameters[keys], cli[keys]),
+        "Custom service sequences or independent constraints were lost in shared settings")
+  foreach::registerDoSEQ()
+  report_path <- file.path(directory, "run_parameters.tsv")
+  write_run_parameters(input, data.frame(gene = "test_gene", class = "cds"), report_path)
+  report <- read_tsv(report_path, show_col_types = FALSE)
+  values <- setNames(report$value, report$parameter)
+  check(values[["bridge_sequence"]] == cli$bridge_sequence &&
+    values[["ptarget_sgrna_scaffold"]] == cli$sgrna_scaffold &&
+    values[["ptarget_sgrna_forward_annealing"]] == cli$sgrna_forward_annealing &&
+    values[["ptarget_sgrna_reverse_annealing"]] == cli$sgrna_reverse_annealing &&
+    values[["sgrna_reverse_overhang"]] == cli$sgrna_reverse_overhang &&
+    values[["sgrna_product_overlap"]] == cli$sgrna_product_overlap &&
+    values[["n20_mid_closeness_max"]] == "0",
+    "Run report lost configured service sequences or midpoint threshold")
 })
 
 # 4, 13: separately specified genomic N20 and PAM on both strands.
@@ -206,6 +231,8 @@ local({
                 parameters = list(left_arm = c(min = 30L, opt = 30L, max = 30L),
                                   right_arm = c(min = 40L, opt = 40L, max = 40L),
                                   n20_arm_min_distance = 40L, cds_fs = FALSE,
+                                  bridge_sequence = DEFAULT_BRIDGE_SEQUENCE,
+                                  sgrna_product_overlap = SGRNA_PRODUCT_OVERLAP,
                                   threads = 1L, primer3_generation = primer3_generation_defaults(),
       primer3_buffer = primer3_buffer_parameters(), site2 = "CTGCAG"))
   expect_error(design_homology_arms(input, list(start = 1001L, end = 1300L,
@@ -335,6 +362,6 @@ local({
 # 22: preserve IUPAC meaning and the agreed optional frame policy.
 check(identical(reverse_complement_string("ARYKMBDHVN"), "NBDHVKMRYT"), "Incorrect IUPAC RC")
 check(identical(vapply(198:200, function(n) design_bridge("cds", n), character(1)),
-                c("ATGACTGCCCGCAAG", "ATGACTGCCCGCAA", "ATGACTGCCCGCA")),
-      "Existing optional-frame bridge rule changed")
+                c("ATGACTGCCCGCAAG", "ATGACTGCCCGCA", "ATGACTGCCCGCAA")),
+      "CDS bridge does not compensate deletion phase")
 message("Targeted regressions passed")

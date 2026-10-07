@@ -41,7 +41,10 @@ Select targets with `--cds`, `--ncrna`, or both. Targets are matched first by
 `locus_tag`, then by `gene`; lists may be comma-separated or space-separated.
 
 Each restriction site must occur once in pTarget. The selected cassette must
-start with an existing N20 followed by the protocol's 83-nt SpCas9 scaffold.
+start with an existing N20 followed by the selected `--sgrna-scaffold`.
+The default is the existing 83-nt scaffold; alternatives may differ in sequence
+and length. Choose a scaffold compatible with your Cas9: DHOLE checks sequence
+and assembly consistency, not experimental activity.
 `--ptarget-cassette-arc` selects the shortest arc by default; `forward` follows
 the input strand from `site1` to `site2`, and `reverse` follows the
 reverse-complement strand.
@@ -54,9 +57,15 @@ reverse-complement strand.
 | `--n20-mn` | `1` | Required N20 count |
 | `--n20-strands` | `random` | `plus`, `minus`, `both`, or unconstrained `random` |
 | `--n20-offtarget` | `0` | Maximum CHOPCHOP `MM0,MM1,...` values |
+| `--n20-mid-closeness-max` | `0.18` | CDS candidates require `mid_closeness <= threshold`; `0` disables this filter. Does not filter ncRNA |
 | `--site1` | `ACTAGT` (SpeI) | First restriction-site sequence in insert orientation |
 | `--site2` | `CTGCAG` (PstI) | Second restriction-site sequence in insert orientation |
 | `--ptarget-cassette-arc` | `shortest` | Arc between the sites used as the cassette: `shortest`, `forward`, or `reverse` |
+| `--bridge-sequence` | `ATGACTGCCCGCAAG` | Bridge in target orientation, at least 3 nt; CDS uses a phase-preserving prefix, ncRNA uses the full sequence |
+| `--sgrna-scaffold` | Existing 83-nt sequence below | Constant sgRNA DNA sequence without N20; must match the selected pTarget cassette after its original N20 |
+| `--sgrna-forward-annealing` | First 36 scaffold nt | Forward primer annealing region, written 5′→3′ |
+| `--sgrna-reverse-annealing` | Reverse complement of last 23 scaffold nt | Reverse primer annealing region, written 5′→3′ |
+| `--sgrna-reverse-overhang` | `AGTTGACGCT` | Reverse primer 5′ tail; its reverse complement supplies the left-arm overlap |
 | `--sgrna-annealing-temp-c` | `60` | Annealing temperature for the sgRNA-cassette PCR |
 | `--cds-fs`, `--ncrna-fs` | off | Require deleted length divisible by three |
 | `--left-arm-min/opt/max` | `300/350/400` | Left-arm structural limits |
@@ -68,6 +77,38 @@ reverse-complement strand.
 | `--primer-min-product-size` | `50` | Minimum counted amplicon size |
 | `--primer-max-product-size` | `2000` | Maximum counted amplicon size |
 | `--primer-max-offtarget-products` | `0` | Preferred maximum non-intended amplicons |
+
+Service sequences accept only A/C/G/T and are normalized to uppercase. The
+default scaffold is:
+
+```text
+GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGCTTTTTTT
+```
+
+For a scaffold shorter than 36 or 23 nt, explicitly supply the corresponding
+annealing sequence. The chosen primers must uniquely amplify the entire
+selected scaffold from circular pTarget. The addressing N20 is still selected
+by the existing target-selection workflow.
+
+For CDS, a bridge of length `L` and deletion of length `d` uses the first
+`L - ((L - d) mod 3)` bases, removing at most two bases from its 3′ end. This
+preserves `(inserted length - deleted length) mod 3 = 0`. The default bridge
+therefore gives lengths 15, 13, and 14 for deletion remainders 0, 1, and 2.
+The bridge is reverse-complemented when inserted into the genomic FASTA for
+a minus-strand target. `--cds-fs` and `--ncrna-fs` independently retain their
+requirement that the deletion length be divisible by three. Junction codons
+and possible stop codons are not evaluated.
+
+`mid_closeness` remains the absolute distance between the integer midpoint of
+the feature and the integer midpoint of N20, divided by feature length.
+Candidates remain sorted by this metric even when its filter is disabled.
+`--n20-arm-min-distance` independently controls the N20-to-arm offset.
+
+`TechReport/run_parameters.tsv` records the original bridge and all resolved
+sgRNA sequences, including annealing regions and assembly overlap. Each target's
+`report.tsv` records `effective_bridge` in target orientation,
+`effective_bridge_length`, `bridge_trimmed_nt`, and `genomic_bridge` in genomic
+FASTA orientation.
 
 For all available options, run:
 
@@ -165,6 +206,49 @@ of Primer3 row 1, fallback warnings, and selection of row 2.
 Run `bash benchmark/run.sh [N=10] [M=10] [seed=1]` for repeated default-level-2
 designs on random MG1655 CDS. Runtime and primer/filtering plots are saved to
 a PDF; DHOLE outputs are archived automatically. See [benchmark/README.md](benchmark/README.md).
+
+## Export deletions for AutoESDCas
+
+```bash
+bash tools/export_autoesdcas.sh
+```
+
+Requires Bash and Python 3.9+ (standard library only). By default, reads
+`tempo/primersP45_Z8K/*/TechReport/` and resolves the genome FNA basename from
+each run's `run_parameters.tsv` against `tempo/`. Writes one CSV per run to
+`tempo/autoesdcas/`, plus `deletions.tsv` with genome paths, 1-based inclusive
+deletion coordinates, and the DHOLE bridge in genomic orientation. Re-running
+overwrites these export files.
+
+The script exports successful designs (`status=ok`), including designs with QC
+warnings. It takes the gap between the final homology arms in `pcr_products.tsv`,
+checks arm sequences against the FNA and `deleted_nt` against `report.tsv`, and
+verifies the edited genome model. GFF is unnecessary: full gene boundaries would
+not reproduce DHOLE's partial deletions, and gene names may have multiple hits.
+The upstream sequence is 200 bp by default, stays in FNA orientation on either
+target strand, and must map uniquely on both strands across all FNA records.
+Invalid sequences, inconsistent results, or insufficient upstream sequence stop
+the export before CSV files are written; circular wrapping is not performed.
+
+For the files in `tempo`, upload `P45p.csv` with `P45p_dnaa.fna`, and `Z8Kp.csv`
+with `Z8Kp_dnaa.fna`, as separate jobs in AutoESDCas **sgRNA Design**, with
+**Only sgRNA Design = No**. The five CSV columns follow the supplied web guide;
+`Inserted sequence` is `-` and `Manipulation type` is `deletion`.
+**These jobs reproduce the deleted intervals, but omit DHOLE's bridge insertions.**
+They therefore do not describe exactly the same final alleles. The upstream
+length is a mapping context, not a homology-arm length; arm parameters are set
+separately in AutoESDCas. The exporter does not submit jobs to the website.
+
+```bash
+# Override paths or use a longer context if the default upstream is not unique.
+bash tools/export_autoesdcas.sh --tempo /path/to/tempo \
+  --results /path/to/primersP45_Z8K --output /path/to/csv --upstream 500
+
+# Synthetic checks, without the private input data.
+bash tools/export_autoesdcas.sh --self-test
+```
+
+Set `PYTHON=/path/to/python3` if Python is not available as `python3`.
 
 ## License
 
