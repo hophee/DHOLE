@@ -62,16 +62,16 @@ for (argument in c("--bridge-sequence", "--sgrna-scaffold",
     assert_error(parse_designer_args(c(base_args, argument, invalid)), "A/C/G/T")
   }
 }
-assert_error(parse_designer_args(c(base_args, "--bridge-sequence", "AC")), "3 нт")
+assert_error(parse_designer_args(c(base_args, "--bridge-sequence", "AC")), "3 nt")
 for (invalid in c("-0.1", "Inf", "NaN")) {
   assert_error(parse_designer_args(c(base_args, "--n20-mid-closeness-max", invalid)),
-               "конечным неотрицательным")
+               "finite non-negative")
 }
 short_scaffold <- "ACGATTCGAGCTAGTCGATG"
 assert_error(parse_designer_args(c(base_args, "--sgrna-scaffold", short_scaffold)),
-             "--sgrna-forward-annealing явно")
+             "--sgrna-forward-annealing explicitly")
 assert_error(parse_designer_args(c(base_args, "--sgrna-scaffold", short_scaffold,
-  "--sgrna-forward-annealing", "acgattcg")), "--sgrna-reverse-annealing явно")
+  "--sgrna-forward-annealing", "acgattcg")), "--sgrna-reverse-annealing explicitly")
 short_settings <- parse_designer_args(c(base_args, "--sgrna-scaffold", short_scaffold,
   "--sgrna-forward-annealing", "acgattcg", "--sgrna-reverse-annealing", "catcgact"))
 short_plasmid <- paste0("ACTAGT", strrep("C", 20L), short_scaffold, "CTGCAG", strrep("A", 100L))
@@ -85,10 +85,10 @@ assert_error(inspect_sgrna_ptarget(short_plasmid, "ACTAGT", "CTGCAG"), "--sgrna-
 wrong_arms <- short_settings
 wrong_arms$sgrna_forward_annealing <- substr(short_scaffold, 2L, 8L)
 assert_error(inspect_sgrna_ptarget(short_plasmid, "ACTAGT", "CTGCAG", parameters = wrong_arms),
-             "не ограничивают выбранный")
+             "do not flank the selected")
 ambiguous_plasmid <- paste0(short_plasmid, short_scaffold, strrep("A", 100L))
 assert_error(inspect_sgrna_ptarget(ambiguous_plasmid, "ACTAGT", "CTGCAG", parameters = short_settings),
-             "найдено: 4")
+             "found: 4")
 for (bridge in c("ACG", "ACGT", "ACGTA", DEFAULT_BRIDGE_SEQUENCE,
                  "ACGTACGTACGTACGT", "ACGTACGTACGTACGTA")) {
   for (deleted in 0:8) {
@@ -201,7 +201,7 @@ assert_true(
 
 assert_error(
   parse_designer_args(c(base_args, "--n20-offtarget", "0,-1")),
-  "неотрицательные"
+  "non-negative"
 )
 assert_error(
   parse_designer_args(c(base_args, "--left-arm-min", "401")),
@@ -209,11 +209,11 @@ assert_error(
 )
 assert_error(
   parse_designer_args(c(base_args, "--filtering-level", "4")),
-  "1, 2 или 3"
+  "1, 2 or 3"
 )
 assert_error(
   parse_designer_args(c(base_args, "--sgrna-annealing-temp-c", "100")),
-  "между 0 и 100"
+  "between 0 and 100"
 )
 assert_error(
   parse_designer_args(c(base_args, "--ptarget-cassette-arc", "guess")),
@@ -225,7 +225,7 @@ assert_error(
 )
 assert_error(
   parse_designer_args(c(base_args, "--site2", "ACTAGT")),
-  "должны быть разными"
+  "must be different"
 )
 
 feature <- list(start = 100L, end = 299L, length = 200L)
@@ -265,7 +265,7 @@ local({
 })
 assert_error(
   filter_grnas(grna_path, feature, "ncrna", c(0L, 1L, 2L)),
-  "только 2 колонок MM"
+  "only 2 MM columns"
 )
 
 pool <- data.frame(
@@ -743,11 +743,11 @@ formatted_failures <- format_openprimer_failures(
 )
 assert_true(
   identical(formatted_failures, c(
-    "EVAL_primer_length[primer_length_fw=24 нт (18–22 нт)]",
-    "EVAL_no_runs[no_runs_fw=5 нт (≤ 4 нт)]",
+    "EVAL_primer_length[primer_length_fw=24 nt (18–22 nt)]",
+    "EVAL_no_runs[no_runs_fw=5 nt (≤ 4 nt)]",
     paste0(
-      "EVAL_secondary_structure[Structure_deltaG=-2.25 ккал/моль ",
-      "(≥ -1 ккал/моль)]"
+      "EVAL_secondary_structure[Structure_deltaG=-2.25 kcal/mol ",
+      "(≥ -1 kcal/mol)]"
     )
   )),
   "QC failures do not report measured and threshold values"
@@ -881,7 +881,7 @@ assert_true(
 )
 assert_error(
   derive_sgrna_annealing("ACGT"),
-  "несовместима со схемой sgRNA"
+  "is incompatible with the sgRNA layout"
 )
 synthetic_ptarget <- DNAString(paste0(
   "GCAGGGGACTAGT",
@@ -961,7 +961,7 @@ assert_error(
     "ACTAGT",
     "CTGCAG"
   ),
-  "ровно один раз"
+  "exactly once"
 )
 
 pcr_forward_annealing <- "ACGTTGCAAGTCGATCGTAC"
@@ -1008,12 +1008,12 @@ openprimer_report_metrics <- format_openprimer_report_metrics(data.frame(
 ))
 assert_true(
   any(
-    openprimer_report_metrics$metric == "GC-состав forward-праймера, %" &
+    openprimer_report_metrics$metric == "Forward primer GC content, %" &
       openprimer_report_metrics$value == "50"
   ) &&
     any(
-      openprimer_report_metrics$metric == "Проверка GC-состава" &
-        openprimer_report_metrics$value == "пройдено"
+      openprimer_report_metrics$metric == "GC content check" &
+        openprimer_report_metrics$value == "passed"
     ),
   "openPrimeR metrics were not formatted with readable names and values"
 )
@@ -1107,11 +1107,11 @@ wet_lab_report <- readLines(
   encoding = "UTF-8"
 )
 assert_true(
-  any(grepl("Без успешного нокаута.*500", wet_lab_report)),
+  any(grepl("Without successful knockout.*500", wet_lab_report)),
   "WetLab report lacks the unsuccessful-knockout PCR size"
 )
 assert_true(
-  any(grepl("С успешным нокаутом.*350", wet_lab_report)),
+  any(grepl("With successful knockout.*350", wet_lab_report)),
   "WetLab report lacks the successful-knockout PCR size"
 )
 assert_true(
@@ -1123,13 +1123,13 @@ assert_true(
   "WetLab report lacks per-N20 distances to both homology arms"
 )
 assert_true(
-  any(grepl("Оффтаргетные ПЦР-продукты, всего.*0", wet_lab_report)) &&
-    any(grepl("GC-состав forward-праймера.*50", wet_lab_report)),
+  any(grepl("Total off-target PCR products.*0", wet_lab_report)) &&
+    any(grepl("Forward primer GC content.*50", wet_lab_report)),
   "WetLab report lacks readable screening primer QC"
 )
 assert_true(
-  any(grepl("Режим фильтрации праймеров.*2 \\(default\\)", wet_lab_report)) &&
-    any(grepl("Предупреждения primer QC.*secondary_structure", wet_lab_report)),
+  any(grepl("Primer filtering mode.*2 \\(default\\)", wet_lab_report)) &&
+    any(grepl("Primer QC warnings.*secondary_structure", wet_lab_report)),
   "WetLab report lacks filtering mode or fallback warnings"
 )
 assert_true(

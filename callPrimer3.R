@@ -64,7 +64,7 @@ callPrimer3 <- function(seq,size_range='151-500',Tm=c(55,57,58), Tm_diff=5, name
   # identify primer3 version used
   pr3_ver <-  as.numeric(sub(".+release (\\d+\\.\\d+)\\.*(\\d*)$", "\\1\\2", 
                              run_primer3("--about")))
-  if (length(pr3_ver) != 1L || is.na(pr3_ver)) primer3_error("Некорректный ответ Primer3 --about")
+  if (length(pr3_ver) != 1L || is.na(pr3_ver)) primer3_error("Invalid response from Primer3 --about")
   sequence_overhung_left <- if (pr3_ver>2.5 & !is.null(seq_oh_left)) sprintf("SEQUENCE_OVERHANG_LEFT=%s",seq_oh_left) else  NULL
   sequence_overhung_right <- if (pr3_ver>2.5 & !is.null(seq_oh_right)) sprintf("SEQUENCE_OVERHANG_RIGHT=%s",seq_oh_right) else NULL
   fw_primer_str <- if (is.null(fw_primer)) NULL else sprintf("SEQUENCE_PRIMER=%s",fw_primer)

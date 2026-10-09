@@ -318,9 +318,9 @@ run_integration() {
     txt_records="$(awk 'NR > 1 { count++ } END { print count + 0 }' "$wet_target_dir/final_sequences.txt")"
     [[ "$fasta_records" -eq "$txt_records" ]] ||
       fail "WetLab FASTA and TXT sequence sets differ for $gene"
-    grep -q 'Без успешного нокаута' "$wet_target_dir/wet_lab_report.txt" ||
+    grep -q 'Without successful knockout' "$wet_target_dir/wet_lab_report.txt" ||
       fail "WetLab report lacks the unsuccessful-knockout PCR size for $gene"
-    grep -q 'С успешным нокаутом' "$wet_target_dir/wet_lab_report.txt" ||
+    grep -q 'With successful knockout' "$wet_target_dir/wet_lab_report.txt" ||
       fail "WetLab report lacks the successful-knockout PCR size for $gene"
     grep -q 'DECIPHER::AmplifyDNA' "$wet_target_dir/wet_lab_report.txt" ||
       fail "WetLab report lacks modelled PCR products for $gene"
@@ -335,7 +335,7 @@ run_integration() {
       fallback_count=$((fallback_count + 1))
       grep -q $'\tprimer_qc\tWARNING\t' "$target_dir/design.log" ||
         fail "design.log lacks a fallback warning for $gene"
-      grep -q 'Предупреждения primer QC' "$wet_target_dir/wet_lab_report.txt" ||
+      grep -q 'Primer QC warnings' "$wet_target_dir/wet_lab_report.txt" ||
         fail "WetLab report lacks fallback warnings for $gene"
     fi
     bash "$R_RUNNER" - "$target_dir" <<'EOF' || fail "selected primer QC trace is invalid for $gene"
@@ -404,7 +404,7 @@ if [[ "$verbose" -eq 0 ]]; then
     awk '
       /^=== \[6\/6\].*: START ===$/ { in_integration = 1; next }
       /^=== \[6\/6\].*: END / { in_integration = 0 }
-      in_integration && /Выбраны праймеры с QC-рисками/ && !seen[$0]++
+      in_integration && /Selected primers have QC risks/ && !seen[$0]++
     ' "$TEST_LOG" || true
   )"
   if [[ -n "$qc_violation_summary" ]]; then

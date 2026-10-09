@@ -24,7 +24,7 @@ normalize_restriction_site <- function(site, argument_name) {
   if (length(site) != 1L || is.na(site) || !nzchar(site) ||
     !grepl("^[ACGT]+$", site)) {
     stop(
-      sprintf("%s должен быть непустой последовательностью A/C/G/T", argument_name),
+      sprintf("%s must be a non-empty A/C/G/T sequence", argument_name),
       call. = FALSE
     )
   }
@@ -100,10 +100,10 @@ find_oriented_restriction_pair <- function(
   cassette_arc <- tolower(trimws(as.character(cassette_arc)))
   if (length(cassette_arc) != 1L || is.na(cassette_arc) ||
       !cassette_arc %in% c("shortest", "forward", "reverse")) {
-    stop("cassette_arc должен быть shortest, forward или reverse", call. = FALSE)
+    stop("cassette_arc must be shortest, forward or reverse", call. = FALSE)
   }
   if (site1 == site2) {
-    stop("site1 и site2 должны быть разными", call. = FALSE)
+    stop("site1 and site2 must be different", call. = FALSE)
   }
 
   locate_site <- function(site, label) {
@@ -116,7 +116,7 @@ find_oriented_restriction_pair <- function(
     if (length(positions) != 1L) {
       stop(
         sprintf(
-          "%s должен встречаться в кольцевой pTarget ровно один раз; найдено: %d",
+          "%s must occur in circular pTarget exactly once; found: %d",
           label,
           length(positions)
         ),
@@ -136,7 +136,7 @@ find_oriented_restriction_pair <- function(
   second <- locate_site(site2, "site2")
   possible_orientations <- intersect(first$strands, second$strands)
   if (!length(possible_orientations)) {
-    stop("site1 и site2 имеют несовместимую ориентацию", call. = FALSE)
+    stop("site1 and site2 have incompatible orientations", call. = FALSE)
   }
   make_candidate <- function(orientation) {
     oriented <- if (orientation == "+") {
@@ -173,7 +173,7 @@ find_oriented_restriction_pair <- function(
   candidates <- Filter(Negate(is.null), lapply(possible_orientations, make_candidate))
   if (!length(candidates)) {
     stop(
-      "Сайты рестрикции перекрываются или не оставляют pTarget backbone",
+      "Restriction sites overlap or leave no pTarget backbone",
       call. = FALSE
     )
   }
@@ -182,7 +182,7 @@ find_oriented_restriction_pair <- function(
     candidates <- Filter(function(x) x$orientation == requested, candidates)
     if (length(candidates) != 1L) {
       stop(
-        sprintf("Для cassette_arc=%s не найдена ориентированная пара сайтов", cassette_arc),
+        sprintf("No oriented site pair found for cassette_arc=%s", cassette_arc),
         call. = FALSE
       )
     }
@@ -191,7 +191,7 @@ find_oriented_restriction_pair <- function(
   lengths <- vapply(candidates, function(x) x$cassette_length, numeric(1))
   if (sum(lengths == min(lengths)) != 1L) {
     stop(
-      "Дуги между site1 и site2 равны; задайте cassette_arc=forward или reverse",
+      "Arcs between site1 and site2 are equal; set cassette_arc=forward or reverse",
       call. = FALSE
     )
   }
@@ -209,7 +209,7 @@ sgrna_sequence_settings <- function(
     if (is.null(sequence)) {
       if (nchar(scaffold) < size) {
         stop(sprintf(
-          "Каркас короче %d нт; задайте %s явно", size, argument
+          "Scaffold is shorter than %d nt; set %s explicitly", size, argument
         ), call. = FALSE)
       }
       sequence <- if (reverse) {
@@ -234,7 +234,7 @@ derive_sgrna_annealing <- function(cassette, parameters = sgrna_sequence_setting
   cassette <- toupper(as.character(cassette))
   if (length(cassette) != 1L || !nzchar(cassette) ||
       !grepl("^[ACGT]+$", cassette)) {
-    stop("Кассета pTarget должна содержать только A/C/G/T", call. = FALSE)
+    stop("The pTarget cassette must contain only A/C/G/T", call. = FALSE)
   }
   scaffold_start <- SGRNA_GUIDE_LENGTH + 1L
   scaffold_end <- SGRNA_GUIDE_LENGTH + nchar(parameters$sgrna_scaffold)
@@ -242,8 +242,8 @@ derive_sgrna_annealing <- function(cassette, parameters = sgrna_sequence_setting
       substr(cassette, scaffold_start, scaffold_end) != parameters$sgrna_scaffold) {
     stop(
       paste(
-        "pTarget несовместима со схемой sgRNA:",
-        "сразу после site1 ожидаются N20 и выбранный --sgrna-scaffold"
+        "pTarget is incompatible with the sgRNA layout:",
+        "N20 and the selected --sgrna-scaffold are expected immediately after site1"
       ),
       call. = FALSE
     )
@@ -306,8 +306,8 @@ locate_circular_pcr_template <- function(
     stop(
       sprintf(
         paste(
-          "Ожидался один sgRNA PCR-продукт на кольцевой pTarget;",
-          "найдено: %d"
+          "Expected one sgRNA PCR product on circular pTarget;",
+          "found: %d"
         ),
         length(candidates)
       ),
@@ -337,8 +337,8 @@ inspect_sgrna_ptarget <- function(
       as.character(template$sequence) != annealing$scaffold) {
     stop(
       paste(
-        "pTarget несовместима со схемой sgRNA:",
-        "участки отжига не ограничивают выбранный --sgrna-scaffold"
+        "pTarget is incompatible with the sgRNA layout:",
+        "Annealing regions do not flank the selected --sgrna-scaffold"
       ),
       call. = FALSE
     )
@@ -373,7 +373,7 @@ model_edited_ptargets <- function(
       !endsWith(left_arm_product, bridge) ||
       !startsWith(right_arm_product, bridge)
   ) {
-    stop("PCR-продукты не содержат ожидаемые перекрытия сборки", call. = FALSE)
+    stop("PCR products do not contain the expected assembly overlaps", call. = FALSE)
   }
   pair <- find_oriented_restriction_pair(
     plasmid,
@@ -391,7 +391,7 @@ model_edited_ptargets <- function(
     any(!startsWith(inserts, site1)) ||
       any(!endsWith(inserts, site2))
   ) {
-    stop("PCR-сборка не ограничена ожидаемыми site1/site2", call. = FALSE)
+    stop("PCR assembly is not flanked by the expected site1/site2", call. = FALSE)
   }
   edited <- DNAStringSet(paste0(inserts, pair$backbone))
   names(edited) <- paste0(name_prefix, "_pTarget_N20_", seq_along(edited))
@@ -415,7 +415,7 @@ simulate_full_primer_pcr <- function(
   processors = 1L
 ) {
   if (!requireNamespace("DECIPHER", quietly = TRUE)) {
-    stop("R-пакет DECIPHER не установлен", call. = FALSE)
+    stop("The DECIPHER R package is not installed", call. = FALSE)
   }
   full_forward <- toupper(as.character(full_forward))
   full_reverse <- toupper(as.character(full_reverse))
@@ -434,7 +434,7 @@ simulate_full_primer_pcr <- function(
       )
   ) {
     stop(
-      sprintf("Некорректные праймеры или шаблон для PCR %s", reaction),
+      sprintf("Invalid primers or template for PCR %s", reaction),
       call. = FALSE
     )
   }
@@ -471,7 +471,7 @@ simulate_full_primer_pcr <- function(
   expected <- which(as.character(products) == primed_template)
   if (length(products) != 1L || length(expected) != 1L) {
     stop(
-      sprintf("DECIPHER не вернул однозначный PCR-продукт для %s", reaction),
+      sprintf("DECIPHER did not return an unambiguous PCR product for %s", reaction),
       call. = FALSE
     )
   }
@@ -522,7 +522,7 @@ model_design_pcr_products <- function(
   if (nchar(sgrna_template) > max_product_size) {
     stop(
       sprintf(
-        "sgRNA PCR-продукт (%d bp) превышает --primer-max-product-size=%d",
+        "sgRNA PCR product (%d bp) exceeds --primer-max-product-size=%d",
         nchar(sgrna_template),
         max_product_size
       ),
@@ -546,7 +546,7 @@ model_design_pcr_products <- function(
   rows <- lapply(seq_along(sgrnas), function(i) {
     simulate_full_primer_pcr(
       paste0("sgRNA_N20_", i),
-      paste0("ПЦР sgRNA-кассеты для N20_", i),
+      paste0("sgRNA cassette PCR for N20_", i),
       ptarget_location,
       sgrna_template,
       names(sgrnas)[[i]],
@@ -574,9 +574,8 @@ model_design_pcr_products <- function(
     rows[[length(rows) + 1L]] <- simulate_full_primer_pcr(
       reaction,
       paste(
-        "ПЦР",
-        c("левого", "правого")[[i]],
-        "плеча гомологии"
+        c("Left", "Right")[[i]],
+        "homology arm PCR"
       ),
       sprintf(
         "%s:%d-%d (%s)",
@@ -607,7 +606,7 @@ model_design_pcr_products <- function(
   edited_end <- screening_start +
     screening_product_sizes[["successful_insertion_bp"]] - 1L
   if (edited_end > length(edited_genome[[1]])) {
-    stop("Скрининговый PCR-продукт выходит за границу edited genome", call. = FALSE)
+    stop("Screening PCR product extends beyond the edited genome", call. = FALSE)
   }
   screening_temp <- round(min(
     screening$PRIMER_LEFT_TM[[1]],
@@ -619,8 +618,8 @@ model_design_pcr_products <- function(
   )
   screening_ends <- c(original_end, edited_end)
   screening_descriptions <- c(
-    "Скрининговая ПЦР исходного генома",
-    "Скрининговая ПЦР редактированного генома"
+    "Original genome screening PCR",
+    "Edited genome screening PCR"
   )
   for (i in seq_along(screening_templates)) {
     template_name <- names(screening_templates)[[i]]
@@ -688,7 +687,7 @@ read_genome_annotation <- function(path, format = "bakta") {
     if (length(missing)) {
       stop(
         sprintf(
-          "GFF не содержит обязательные колонки: %s",
+          "GFF is missing required columns: %s",
           paste(missing, collapse = ", ")
         ),
         call. = FALSE
@@ -706,7 +705,7 @@ read_genome_annotation <- function(path, format = "bakta") {
     )
   } else {
     stop(
-      "Неподдерживаемый формат аннотации. Допустимы: tsv (bakta), gff",
+      "Unsupported annotation format. Supported formats: tsv (bakta), gff",
       call. = FALSE
     )
   }
@@ -715,7 +714,7 @@ read_genome_annotation <- function(path, format = "bakta") {
   if (length(missing)) {
     stop(
       sprintf(
-        "Аннотация не содержит обязательные колонки: %s",
+        "Annotation is missing required columns: %s",
         paste(missing, collapse = ", ")
       ),
       call. = FALSE
@@ -726,7 +725,7 @@ read_genome_annotation <- function(path, format = "bakta") {
   }
   if (!"seqid" %in% names(annotation)) {
     stop(
-      "Аннотация не содержит колонку seqid или sequence_id",
+      "Annotation is missing a seqid or sequence_id column",
       call. = FALSE
     )
   }
@@ -745,7 +744,7 @@ find_target_feature <- function(annotation, target_name) {
     return(by_gene[[1]])
   }
   stop(
-    sprintf("Не найден ген/feature с locus_tag или gene: %s", target_name),
+    sprintf("No gene/feature found with locus_tag or gene: %s", target_name),
     call. = FALSE
   )
 }
@@ -1042,12 +1041,12 @@ parse_designer_args <- function(args) {
   parse_offtarget_thresholds <- function(value) {
     value <- normalize_scalar(value)
     if (!length(value)) {
-      stop("--n20-offtarget не может быть пустым", call. = FALSE)
+      stop("--n20-offtarget cannot be empty", call. = FALSE)
     }
     fields <- trimws(strsplit(value, ",", fixed = TRUE)[[1]])
     if (!length(fields) || any(!nzchar(fields))) {
       stop(
-        "--n20-offtarget должен быть списком целых чисел через запятую",
+        "--n20-offtarget must be a comma-separated list of integers",
         call. = FALSE
       )
     }
@@ -1058,7 +1057,7 @@ parse_designer_args <- function(args) {
         any(thresholds != as.integer(thresholds))
     ) {
       stop(
-        "--n20-offtarget допускает только неотрицательные целые числа",
+        "--n20-offtarget only accepts non-negative integers",
         call. = FALSE
       )
     }
@@ -1069,7 +1068,7 @@ parse_designer_args <- function(args) {
     if (anyNA(values) || any(values < 1L) || !identical(values, sort(values))) {
       stop(
         sprintf(
-          "Для %s плеча требуется 0 < min <= opt <= max",
+          "The %s arm requires 0 < min <= opt <= max",
           side
         ),
         call. = FALSE
@@ -1087,7 +1086,7 @@ parse_designer_args <- function(args) {
     if (length(value) != 1L || !is.finite(value) || value < minimum ||
         (is.integer(extra_defaults[[key]]) &&
          (value != floor(value) || value > .Machine$integer.max))) {
-      stop(sprintf("Некорректный --%s", gsub("_", "-", key)), call. = FALSE)
+      stop(sprintf("Invalid --%s", gsub("_", "-", key)), call. = FALSE)
     }
     if (is.integer(extra_defaults[[key]])) parsed[[key]] <- as.integer(value)
   }
@@ -1095,28 +1094,28 @@ parse_designer_args <- function(args) {
                                   function(key) parsed[[key]]), generation_keys)
   if (primer3_values$min_size > primer3_values$opt_size ||
       primer3_values$opt_size > primer3_values$max_size) {
-    stop("Требуется --primer3-min-size <= --primer3-opt-size <= --primer3-max-size", call. = FALSE)
+    stop("Required: --primer3-min-size <= --primer3-opt-size <= --primer3-max-size", call. = FALSE)
   }
   if (primer3_values$min_tm <= 0 || primer3_values$min_tm > primer3_values$opt_tm ||
       primer3_values$opt_tm > primer3_values$max_tm || primer3_values$max_tm >= 100) {
-    stop("Требуется 0 < --primer3-min-tm <= --primer3-opt-tm <= --primer3-max-tm < 100", call. = FALSE)
+    stop("Required: 0 < --primer3-min-tm <= --primer3-opt-tm <= --primer3-max-tm < 100", call. = FALSE)
   }
   if (primer3_values$min_gc > primer3_values$max_gc || primer3_values$max_gc > 100) {
-    stop("Требуется 0 <= --primer3-min-gc <= --primer3-max-gc <= 100", call. = FALSE)
+    stop("Required: 0 <= --primer3-min-gc <= --primer3-max-gc <= 100", call. = FALSE)
   }
   if (primer3_values$gc_clamp > primer3_values$max_size) {
-    stop("--primer3-gc-clamp должен быть <= --primer3-max-size", call. = FALSE)
+    stop("--primer3-gc-clamp must be <= --primer3-max-size", call. = FALSE)
   }
   annotation_format <- tolower(normalize_scalar(parsed$annotation_format))
   if (!annotation_format %in% c("bakta", "gff")) {
     stop(
-      "Некорректный --annotation-format. Допустимы: bakta, gff",
+      "Invalid --annotation-format. Allowed values: bakta, gff",
       call. = FALSE
     )
   }
   n20_mn <- as.integer(parsed$n20_mn)
   if (length(n20_mn) != 1L || is.na(n20_mn) || n20_mn < 1L) {
-    stop("--n20-mn должен быть положительным целым числом", call. = FALSE)
+    stop("--n20-mn must be a positive integer", call. = FALSE)
   }
   n20_strands <- tolower(normalize_scalar(parsed$n20_strands))
   strand_aliases <- c(
@@ -1133,7 +1132,7 @@ parse_designer_args <- function(args) {
       !n20_strands %in% names(strand_aliases)
   ) {
     stop(
-      "Некорректный --n20-strands. Допустимы: plus, minus, both, random",
+      "Invalid --n20-strands. Allowed values: plus, minus, both, random",
       call. = FALSE
     )
   }
@@ -1144,7 +1143,7 @@ parse_designer_args <- function(args) {
       is.na(filtering_level) ||
       !filtering_level %in% 1:3
   ) {
-    stop("--filtering-level должен быть равен 1, 2 или 3", call. = FALSE)
+    stop("--filtering-level must be 1, 2 or 3", call. = FALSE)
   }
   sgrna_annealing_temp_c <- as.numeric(parsed$sgrna_annealing_temp_c)
   if (
@@ -1154,7 +1153,7 @@ parse_designer_args <- function(args) {
       sgrna_annealing_temp_c >= 100
   ) {
     stop(
-      "--sgrna-annealing-temp-c должен быть между 0 и 100",
+      "--sgrna-annealing-temp-c must be between 0 and 100",
       call. = FALSE
     )
   }
@@ -1164,18 +1163,18 @@ parse_designer_args <- function(args) {
       !ptarget_cassette_arc %in% c("shortest", "forward", "reverse")
   ) {
     stop(
-      "--ptarget-cassette-arc должен быть shortest, forward или reverse",
+      "--ptarget-cassette-arc must be shortest, forward or reverse",
       call. = FALSE
     )
   }
   left_arm <- validate_arm_lengths(
-    "левого",
+    "left",
     parsed$left_arm_min,
     parsed$left_arm_opt,
     parsed$left_arm_max
   )
   right_arm <- validate_arm_lengths(
-    "правого",
+    "right",
     parsed$right_arm_min,
     parsed$right_arm_opt,
     parsed$right_arm_max
@@ -1187,7 +1186,7 @@ parse_designer_args <- function(args) {
       n20_arm_min_distance < 0L
   ) {
     stop(
-      "--n20-arm-min-distance должен быть неотрицательным целым числом",
+      "--n20-arm-min-distance must be a non-negative integer",
       call. = FALSE
     )
   }
@@ -1208,12 +1207,12 @@ parse_designer_args <- function(args) {
       qc_values[["min_product_size"]] > qc_values[["max_product_size"]] ||
       qc_values[["max_3p_mismatches"]] > qc_values[["critical_3p_bases"]]
   ) {
-    stop("Некорректные параметры primer specificity QC", call. = FALSE)
+    stop("Invalid primer specificity QC parameters", call. = FALSE)
   }
 
   bridge_sequence <- normalize_restriction_site(parsed$bridge_sequence, "--bridge-sequence")
   if (nchar(bridge_sequence) < 3L) {
-    stop("--bridge-sequence должен содержать не менее 3 нт", call. = FALSE)
+    stop("--bridge-sequence must contain at least 3 nt", call. = FALSE)
   }
   sgrna_settings <- sgrna_sequence_settings(
     parsed$sgrna_scaffold,
@@ -1224,7 +1223,7 @@ parse_designer_args <- function(args) {
   n20_mid_closeness_max <- as.numeric(parsed$n20_mid_closeness_max)
   if (length(n20_mid_closeness_max) != 1L ||
       !is.finite(n20_mid_closeness_max) || n20_mid_closeness_max < 0) {
-    stop("--n20-mid-closeness-max должен быть конечным неотрицательным числом", call. = FALSE)
+    stop("--n20-mid-closeness-max must be a finite non-negative number", call. = FALSE)
   }
 
   values <- c(sgrna_settings, list(
@@ -1263,7 +1262,7 @@ parse_designer_args <- function(args) {
     )))
   ))
   if (values$site1 == values$site2) {
-    stop("--site1 и --site2 должны быть разными", call. = FALSE)
+    stop("--site1 and --site2 must be different", call. = FALSE)
   }
 
   required <- c("genome", "genome_annotation", "target_plasmid", "output_dir")
@@ -1278,12 +1277,12 @@ parse_designer_args <- function(args) {
   ]
   if (length(missing)) {
     stop(
-      sprintf("Не заданы: %s", paste(missing, collapse = ", ")),
+      sprintf("Missing arguments: %s", paste(missing, collapse = ", ")),
       call. = FALSE
     )
   }
   if (!length(values$cds) && !length(values$ncrna)) {
-    stop("Нужен хотя бы один из аргументов --cds или --ncrna", call. = FALSE)
+    stop("At least one of --cds or --ncrna is required", call. = FALSE)
   }
   values
 }
@@ -1360,7 +1359,7 @@ filtering_level_name <- function(level) {
   names <- c("lite", "default", "hard")
   level <- as.integer(level)
   if (length(level) != 1L || is.na(level) || !level %in% seq_along(names)) {
-    stop("filtering_level должен быть равен 1, 2 или 3", call. = FALSE)
+    stop("filtering_level must be 1, 2 or 3", call. = FALSE)
   }
   names[[level]]
 }
@@ -1385,7 +1384,7 @@ make_specificity_references <- function(
     sequences <- readDNAStringSet(input$path)
     if (!length(sequences)) {
       stop(
-        sprintf("FASTA не содержит записей: %s", input$path),
+        sprintf("FASTA contains no records: %s", input$path),
         call. = FALSE
       )
     }
@@ -1407,7 +1406,7 @@ make_specificity_references <- function(
   }
   references <- bind_rows(records)
   if (!nrow(references) || anyDuplicated(references$reference_id)) {
-    stop("Не удалось создать уникальный набор specificity references", call. = FALSE)
+    stop("Could not create a unique set of specificity references", call. = FALSE)
   }
   references
 }
@@ -1463,7 +1462,7 @@ enumerate_primer_binding_sites <- function(
   primer_sequence <- toupper(as.character(primer_sequence))
   primer_length <- nchar(primer_sequence)
   if (primer_length < 1L) {
-    stop("Пустая последовательность праймера", call. = FALSE)
+    stop("Empty primer sequence", call. = FALSE)
   }
   strand_patterns <- list(
     `+` = primer_sequence,
@@ -1900,8 +1899,8 @@ assert_openprimer_constraints <- function(active_constraints, required_constrain
     stop(
       sprintf(
         paste(
-          "openPrimeR отключил обязательные constraints: %s.",
-          "Проверьте внешние программы до запуска primer QC"
+          "openPrimeR disabled required constraints: %s.",
+          "Check external programs before running primer QC"
         ),
         paste(missing, collapse = ", ")
       ),
@@ -1950,7 +1949,7 @@ validate_openprimer_tools <- function(required_constraints) {
   if (length(missing)) {
     stop(
       sprintf(
-        "Для обязательного openPrimeR QC недоступны: %s",
+        "Unavailable dependencies for required openPrimeR QC: %s",
         paste(paste(names(missing), unname(missing), sep = "="), collapse = ", ")
       ),
       call. = FALSE
@@ -1970,8 +1969,8 @@ validate_openprimer_tools <- function(required_constraints) {
     if (!identical(status, 0L)) {
       stop(
         paste(
-          "OligoArrayAux найден, но hybrid-min не работает.",
-          "Проверьте UNAFOLDDAT"
+          "OligoArrayAux was found, but hybrid-min does not work.",
+          "Check UNAFOLDDAT"
         ),
         call. = FALSE
       )
@@ -1986,7 +1985,7 @@ load_openprimer_settings <- function(
 ) {
   configure_openprimer_environment()
   if (!requireNamespace("openPrimeR", quietly = TRUE)) {
-    stop("R-пакет openPrimeR не установлен", call. = FALSE)
+    stop("The openPrimeR R package is not installed", call. = FALSE)
   }
   profile <- system.file(
     "extdata",
@@ -1996,7 +1995,7 @@ load_openprimer_settings <- function(
   )
   if (!nzchar(profile)) {
     stop(
-      sprintf("Не найден профиль openPrimeR: %s", config$openprimer_profile),
+      sprintf("openPrimeR profile not found: %s", config$openprimer_profile),
       call. = FALSE
     )
   }
@@ -2084,8 +2083,8 @@ with_openprimer_locale <- function(expression) {
   if (is.na(monetary_locale) || !nzchar(Sys.localeconv()[["mon_decimal_point"]])) {
     stop(
       paste(
-        "openPrimeR/MELTING требует locale с monetary decimal point;",
-        "не удалось включить en_US.UTF-8"
+        "openPrimeR/MELTING requires a locale with a monetary decimal point;",
+        "could not enable en_US.UTF-8"
       ),
       call. = FALSE
     )
@@ -2143,7 +2142,7 @@ format_openprimer_failures <- function(metrics, failed, constraint_limits) {
   metric_specs <- list(
     primer_length = list(
       columns = c("primer_length_fw", "primer_length_rev"),
-      unit = "нт"
+      unit = "nt"
     ),
     gc_ratio = list(
       columns = c("gc_ratio_fw", "gc_ratio_rev"),
@@ -2152,11 +2151,11 @@ format_openprimer_failures <- function(metrics, failed, constraint_limits) {
     ),
     gc_clamp = list(
       columns = c("gc_clamp_fw", "gc_clamp_rev"),
-      unit = "нт"
+      unit = "nt"
     ),
     no_runs = list(
       columns = c("no_runs_fw", "no_runs_rev"),
-      unit = "нт"
+      unit = "nt"
     ),
     no_repeats = list(
       columns = c("no_repeats_fw", "no_repeats_rev"),
@@ -2181,15 +2180,15 @@ format_openprimer_failures <- function(metrics, failed, constraint_limits) {
     ),
     self_dimerization = list(
       columns = "Self_Dimer_DeltaG",
-      unit = "ккал/моль"
+      unit = "kcal/mol"
     ),
     cross_dimerization = list(
       columns = "Cross_Dimer_DeltaG",
-      unit = "ккал/моль"
+      unit = "kcal/mol"
     ),
     secondary_structure = list(
       columns = "Structure_deltaG",
-      unit = "ккал/моль"
+      unit = "kcal/mol"
     )
   )
   vapply(failed, function(flag) {
@@ -2498,7 +2497,7 @@ select_best_primer_pair <- function(candidates) {
   if (length(missing_gates)) {
     stop(
       sprintf(
-        "Таблица ranking не содержит hard gates: %s",
+        "Ranking table is missing hard gates: %s",
         paste(missing_gates, collapse = ", ")
       ),
       call. = FALSE
@@ -2749,7 +2748,7 @@ make_design_input <- function(cli) {
   target_records <- which(references$reference_type == "target_plasmid")
   if (length(target_records) != 1L) {
     stop(
-      "Для моделирования требуется ровно одна запись pTarget в FASTA",
+      "Simulation requires exactly one pTarget record in FASTA",
       call. = FALSE
     )
   }
@@ -2904,7 +2903,7 @@ prepare_chopchop_assets <- function(input) {
   )))
   checksum_file <- paste0(bowtie_prefix, ".fasta.md5")
   checksum <- unname(tools::md5sum(input$genome_path))
-  if (is.na(checksum)) stop("Не удалось прочитать FASTA для индексации", call. = FALSE)
+  if (is.na(checksum)) stop("Could not read FASTA for indexing", call. = FALSE)
   marker <- c(checksum, paste0("bowtie=", BOWTIE_INDEX_VERSION))
   reusable <- file.exists(checksum_file) &&
     identical(readLines(checksum_file, warn = FALSE), marker) &&
@@ -2915,7 +2914,7 @@ prepare_chopchop_assets <- function(input) {
     run_tool("faToTwoBit", c(input$genome_path, two_bit))
     run_tool("bowtie-build", c(input$genome_path, bowtie_prefix))
     if (!all(file.exists(index_files)) || any(file.size(index_files) == 0L)) {
-      stop("Индексация генома не создала полный комплект файлов", call. = FALSE)
+      stop("Genome indexing did not create a complete set of files", call. = FALSE)
     }
     writeLines(marker, checksum_file)
   }
@@ -2928,7 +2927,7 @@ configure_chopchop <- function(input, genome_assets) {
   two_bit_to_fa <- Sys.which("twoBitToFa")
   bowtie <- Sys.which("bowtie")
   if (!nzchar(two_bit_to_fa) || !nzchar(bowtie)) {
-    stop("twoBitToFa или bowtie не найдены в PATH", call. = FALSE)
+    stop("twoBitToFa or bowtie not found in PATH", call. = FALSE)
   }
   config <- file.path(chopchop_dir, "config_local.json")
   writeLines(
@@ -3039,7 +3038,7 @@ filter_grnas <- function(
   if (length(missing)) {
     stop(
       sprintf(
-        "Таблица CHOPCHOP не содержит обязательные колонки: %s",
+        "CHOPCHOP table is missing required columns: %s",
         paste(missing, collapse = ", ")
       ),
       call. = FALSE
@@ -3051,8 +3050,8 @@ filter_grnas <- function(
     stop(
       sprintf(
         paste(
-          "--n20-offtarget содержит %d значений,",
-          "но CHOPCHOP вывел только %d колонок MM"
+          "--n20-offtarget contains %d values,",
+          "but CHOPCHOP returned only %d MM columns"
         ),
         length(offtarget_thresholds),
         length(mm_columns)
@@ -3086,16 +3085,16 @@ filter_grnas <- function(
     filter(self_complementarity == 0)
   if (anyNA(grnas$genomic_start)) {
     stop(
-      "Не удалось разобрать genomic_location в таблице CHOPCHOP",
+      "Could not parse genomic_location in the CHOPCHOP table",
       call. = FALSE
     )
   }
   if (any(!grnas$strand %in% c("+", "-"))) {
-    stop("Некорректная цепь N20 в таблице CHOPCHOP", call. = FALSE)
+    stop("Invalid N20 strand in the CHOPCHOP table", call. = FALSE)
   }
   if (!is.null(genome) && nrow(grnas)) {
     if (any(grnas$genomic_start < 1L | grnas$genomic_end > length(genome))) {
-      stop("Участок N20/PAM выходит за границы генома", call. = FALSE)
+      stop("N20/PAM region extends beyond the genome", call. = FALSE)
     }
     matches <- vapply(seq_len(nrow(grnas)), function(i) {
       sequence <- genome[grnas$genomic_start[[i]]:grnas$genomic_end[[i]]]
@@ -3103,7 +3102,7 @@ filter_grnas <- function(
       identical(as.character(sequence), toupper(grnas$target_sequence[[i]]))
     }, logical(1))
     if (!all(matches)) {
-      stop("Последовательность N20/PAM CHOPCHOP не совпадает с геномом", call. = FALSE)
+      stop("CHOPCHOP N20/PAM sequence does not match the genome", call. = FALSE)
     }
   }
   if (design_class == "cds" && n20_mid_closeness_max > 0) {
@@ -3121,7 +3120,7 @@ prepare_grna_pool <- function(grnas, n20_mn, strand_mode) {
   if (nrow(grnas) < n20_mn) {
     stop(
       sprintf(
-        "Недостаточно подходящих N20: найдено %d, требуется не менее %d",
+        "Not enough suitable N20s: found %d, at least %d required",
         nrow(grnas),
         n20_mn
       ),
@@ -3134,7 +3133,7 @@ prepare_grna_pool <- function(grnas, n20_mn, strand_mode) {
       (!any(grnas$strand == "+") || !any(grnas$strand == "-"))
   ) {
     stop(
-      "Для режима both нужны подходящие N20 на плюс- и минус-цепях",
+      "The both mode requires suitable N20s on the plus and minus strands",
       call. = FALSE
     )
   }
@@ -3395,7 +3394,7 @@ write_primer_qc_trace <- function(trace, target_dir) {
       bind_rows(records),
       error = function(e) {
         stop(
-          sprintf("Не удалось собрать primer QC trace '%s': %s", label, e$message),
+          sprintf("Could not collect primer QC trace '%s': %s", label, e$message),
           call. = FALSE
         )
       }
@@ -3764,7 +3763,7 @@ design_homology_arms <- function(
     config = input$parameters$primer3_generation
   )
   if (!file.exists(input$tools$primer3)) {
-    stop("primer3_core не найден", call. = FALSE)
+    stop("primer3_core not found", call. = FALSE)
   }
 
   attempt <- 0L
@@ -3805,7 +3804,7 @@ design_homology_arms <- function(
         length(right_seq) < right_limits[["min"]]
     ) {
       stop(
-        "Граница генома не позволяет выдержать минимальную длину плеч",
+        "Genome boundary prevents meeting the minimum arm length",
         call. = FALSE
       )
     }
@@ -4301,7 +4300,7 @@ calculate_screening_product_sizes <- function(
       is.na(edited_size) ||
       edited_size < 1L
   ) {
-    stop("Не удалось рассчитать размеры скрининговых ПЦР-продуктов", call. = FALSE)
+    stop("Could not calculate screening PCR product sizes", call. = FALSE)
   }
   c(
     unsuccessful_insertion_bp = reference_size,
@@ -4316,7 +4315,7 @@ calculate_n20_arm_distances <- function(selected, arm_ticks, target_strand) {
       length(arm_ticks) != 4L ||
       !target_strand %in% c("+", "-")
   ) {
-    stop("Не удалось рассчитать расстояния N20 до плеч гомологии", call. = FALSE)
+    stop("Could not calculate N20 distances to homology arms", call. = FALSE)
   }
   left_boundary <- sort(arm_ticks)[[2]]
   right_boundary <- sort(arm_ticks)[[3]]
@@ -4339,57 +4338,57 @@ calculate_n20_arm_distances <- function(selected, arm_ticks, target_strand) {
     distances$left_arm_distance_bp < 0L |
       distances$right_arm_distance_bp < 0L
   )) {
-    stop("N20 находится вне промежутка между плечами гомологии", call. = FALSE)
+    stop("N20 lies outside the gap between homology arms", call. = FALSE)
   }
   distances
 }
 
 format_openprimer_report_metrics <- function(metrics) {
   labels <- c(
-    constraints_passed = "Все обязательные ограничения пройдены",
-    primer_length_fw = "Длина forward-праймера, нт",
-    primer_length_rev = "Длина reverse-праймера, нт",
-    gc_ratio_fw = "GC-состав forward-праймера, %",
-    gc_ratio_rev = "GC-состав reverse-праймера, %",
-    gc_clamp_fw = "GC-clamp forward-праймера, нт",
-    gc_clamp_rev = "GC-clamp reverse-праймера, нт",
-    no_runs_fw = "Максимальный гомополимерный участок forward, нт",
-    no_runs_rev = "Максимальный гомополимерный участок reverse, нт",
-    no_repeats_fw = "Максимальное число повторов forward",
-    no_repeats_rev = "Максимальное число повторов reverse",
-    Tm_C_fw = "Tm forward по openPrimeR, °C",
-    Tm_C_rev = "Tm reverse по openPrimeR, °C",
-    melting_temp_diff = "Разница Tm пары, °C",
-    tm_source = "Источник разницы Tm",
-    Basic_primer_coverage = "Число покрытых целевых шаблонов",
-    Basic_Coverage_Ratio = "Доля покрытых целевых шаблонов, %",
-    primer_specificity = "Специфичность праймеров, %",
-    primer_efficiency = "Эффективность праймеров",
-    mean_primer_efficiency = "Средняя эффективность праймеров",
-    Self_Dimer_DeltaG = "Худший self-dimer ΔG, ккал/моль",
-    Cross_Dimer_DeltaG = "Худший cross-dimer ΔG, ккал/моль",
-    Structure_deltaG_fw = "Вторичная структура forward ΔG, ккал/моль",
-    Structure_deltaG_rev = "Вторичная структура reverse ΔG, ккал/моль",
-    Structure_deltaG = "Худшая вторичная структура ΔG, ккал/моль",
-    penalty = "Суммарный штраф openPrimeR",
-    unavailable_constraints = "Недоступные проверки openPrimeR",
-    EVAL_primer_length = "Проверка длины праймеров",
-    EVAL_gc_ratio = "Проверка GC-состава",
-    EVAL_gc_clamp = "Проверка GC-clamp",
-    EVAL_no_runs = "Проверка гомополимерных участков",
-    EVAL_no_repeats = "Проверка повторов",
-    EVAL_melting_temp_range = "Проверка диапазона Tm",
-    EVAL_melting_temp_diff = "Проверка разницы Tm",
-    EVAL_primer_coverage = "Проверка покрытия шаблона",
-    EVAL_primer_efficiency = "Проверка эффективности праймеров",
-    EVAL_primer_specificity = "Проверка специфичности праймеров",
-    EVAL_self_dimerization = "Проверка self-dimer",
-    EVAL_cross_dimerization = "Проверка cross-dimer",
-    EVAL_secondary_structure = "Проверка вторичной структуры"
+    constraints_passed = "All required constraints passed",
+    primer_length_fw = "Forward primer length, nt",
+    primer_length_rev = "Reverse primer length, nt",
+    gc_ratio_fw = "Forward primer GC content, %",
+    gc_ratio_rev = "Reverse primer GC content, %",
+    gc_clamp_fw = "Forward primer GC clamp, nt",
+    gc_clamp_rev = "Reverse primer GC clamp, nt",
+    no_runs_fw = "Longest forward homopolymer run, nt",
+    no_runs_rev = "Longest reverse homopolymer run, nt",
+    no_repeats_fw = "Maximum forward repeat count",
+    no_repeats_rev = "Maximum reverse repeat count",
+    Tm_C_fw = "Forward Tm from openPrimeR, °C",
+    Tm_C_rev = "Reverse Tm from openPrimeR, °C",
+    melting_temp_diff = "Primer pair Tm difference, °C",
+    tm_source = "Tm difference source",
+    Basic_primer_coverage = "Number of covered target templates",
+    Basic_Coverage_Ratio = "Covered target templates, %",
+    primer_specificity = "Primer specificity, %",
+    primer_efficiency = "Primer efficiency",
+    mean_primer_efficiency = "Mean primer efficiency",
+    Self_Dimer_DeltaG = "Worst self-dimer ΔG, kcal/mol",
+    Cross_Dimer_DeltaG = "Worst cross-dimer ΔG, kcal/mol",
+    Structure_deltaG_fw = "Forward secondary structure ΔG, kcal/mol",
+    Structure_deltaG_rev = "Reverse secondary structure ΔG, kcal/mol",
+    Structure_deltaG = "Worst secondary structure ΔG, kcal/mol",
+    penalty = "Total openPrimeR penalty",
+    unavailable_constraints = "Unavailable openPrimeR checks",
+    EVAL_primer_length = "Primer length check",
+    EVAL_gc_ratio = "GC content check",
+    EVAL_gc_clamp = "GC clamp check",
+    EVAL_no_runs = "Homopolymer run check",
+    EVAL_no_repeats = "Repeat check",
+    EVAL_melting_temp_range = "Tm range check",
+    EVAL_melting_temp_diff = "Tm difference check",
+    EVAL_primer_coverage = "Template coverage check",
+    EVAL_primer_efficiency = "Primer efficiency check",
+    EVAL_primer_specificity = "Primer specificity check",
+    EVAL_self_dimerization = "Self-dimer check",
+    EVAL_cross_dimerization = "Cross-dimer check",
+    EVAL_secondary_structure = "Secondary structure check"
   )
   present <- intersect(names(labels), names(metrics))
   if (!length(present)) {
-    stop("Для выбранной screening-пары отсутствуют метрики openPrimeR", call. = FALSE)
+    stop("openPrimeR metrics are missing for the selected screening pair", call. = FALSE)
   }
   percentage_metrics <- c(
     "gc_ratio_fw", "gc_ratio_rev", "Basic_Coverage_Ratio",
@@ -4398,7 +4397,7 @@ format_openprimer_report_metrics <- function(metrics) {
   format_value <- function(value, metric) {
     value <- unlist(value, use.names = FALSE)
     if (is.logical(value)) {
-      return(paste(ifelse(value, "пройдено", "не пройдено"), collapse = ", "))
+      return(paste(ifelse(value, "passed", "failed"), collapse = ", "))
     }
     numeric_value <- suppressWarnings(as.numeric(value))
     if (metric %in% percentage_metrics && all(!is.na(numeric_value))) {
@@ -4475,7 +4474,7 @@ write_wet_lab_outputs <- function(
           names(screening_product_sizes)
       )
   ) {
-    stop("Неполный набор результатов для WetLab", call. = FALSE)
+    stop("Incomplete set of WetLab results", call. = FALSE)
   }
   dir.create(wet_lab_dir, recursive = TRUE, showWarnings = FALSE)
   writeXStringSet(
@@ -4526,9 +4525,9 @@ write_wet_lab_outputs <- function(
   )
   n20_table <- n20_distances[, required_distances, drop = FALSE]
   names(n20_table) <- c(
-    "N20", "Последовательность N20 (5'-3')", "Цепь",
-    "Геномные координаты", "До левого плеча, п.н.",
-    "До правого плеча, п.н."
+    "N20", "N20 sequence (5'-3')", "Strand",
+    "Genomic coordinates", "Distance to left arm, bp",
+    "Distance to right arm, bp"
   )
   n20_lines <- apply(
     n20_table,
@@ -4536,7 +4535,7 @@ write_wet_lab_outputs <- function(
     function(row) paste(row, collapse = "\t")
   )
   openprimer_table <- screening_qc$openprimer_metrics
-  names(openprimer_table) <- c("Метрика openPrimeR", "Значение")
+  names(openprimer_table) <- c("openPrimeR metric", "Value")
   openprimer_lines <- apply(
     openprimer_table,
     1L,
@@ -4559,8 +4558,8 @@ write_wet_lab_outputs <- function(
   )
   pcr_table <- pcr_products[, required_pcr_products, drop = FALSE]
   names(pcr_table) <- c(
-    "ПЦР-продукт", "Описание", "Локация", "Длина, п.н.",
-    "Полные праймеры", "Условия ПЦР", "Последовательность (5'-3')"
+    "PCR product", "Description", "Location", "Length, bp",
+    "Full primers", "PCR conditions", "Sequence (5'-3')"
   )
   pcr_lines <- apply(
     pcr_table,
@@ -4568,11 +4567,11 @@ write_wet_lab_outputs <- function(
     function(row) paste(row, collapse = "\t")
   )
   report <- c(
-    "2PAC: отчёт для мокрой лаборатории",
-    paste("Цель", feature$query_name, sep = "\t"),
-    paste("Класс", design_class, sep = "\t"),
+    "2PAC: wet-lab report",
+    paste("Target", feature$query_name, sep = "\t"),
+    paste("Class", design_class, sep = "\t"),
     paste(
-      "Режим фильтрации праймеров",
+      "Primer filtering mode",
       sprintf(
         "%d (%s)",
         screening_qc$filtering_level,
@@ -4580,75 +4579,75 @@ write_wet_lab_outputs <- function(
       ),
       sep = "\t"
     ),
-    paste("Статус primer QC", screening_qc$selection_status, sep = "\t"),
+    paste("Primer QC status", screening_qc$selection_status, sep = "\t"),
     paste("QC fallback", screening_qc$fallback_used, sep = "\t"),
-    paste("Предупреждения primer QC", screening_qc$warnings, sep = "\t"),
+    paste("Primer QC warnings", screening_qc$warnings, sep = "\t"),
     "",
-    "Итоговый набор последовательностей",
+    "Final sequence set",
     paste(names(sequence_table), collapse = "\t"),
     sequence_lines,
     "",
-    "Моделированные конструкции",
+    "Simulated constructs",
     paste(names(construction_table), collapse = "\t"),
     construction_lines,
     paste(
-      "Ориентация пары сайтов рестрикции в исходной pTarget",
+      "Restriction site pair orientation in the original pTarget",
       ptarget_site_pair$orientation,
       sep = "\t"
     ),
     "",
-    "PCR-продукты, смоделированные DECIPHER::AmplifyDNA",
-    "Последовательности включают полные праймеры со служебными 5'-хвостами.",
+    "PCR products simulated by DECIPHER::AmplifyDNA",
+    "Sequences include full primers with auxiliary 5' tails.",
     paste(names(pcr_table), collapse = "\t"),
     pcr_lines,
     "",
     paste(
-      "Температуры отжига праймеров",
-      "Tm рассчитана для участка отжига без сервисных последовательностей",
+      "Primer annealing temperatures",
+      "Tm is calculated for the annealing region without auxiliary sequences",
       sep = "\n"
     ),
     paste(names(tm_table), collapse = "\t"),
     tm_lines,
     "",
-    "Размеры скрининговых ПЦР-продуктов",
+    "Screening PCR product sizes",
     paste(
-      "Без успешного нокаута (исходный аллель), п.н.",
+      "Without successful knockout (original allele), bp",
       screening_product_sizes[["unsuccessful_insertion_bp"]],
       sep = "\t"
     ),
     paste(
-      "С успешным нокаутом (редактированный аллель), п.н.",
+      "With successful knockout (edited allele), bp",
       screening_product_sizes[["successful_insertion_bp"]],
       sep = "\t"
     ),
     "",
-    "Расстояния выбранных N20 до плеч гомологии",
+    "Distances from selected N20s to homology arms",
     paste(
-      "Левое и правое плечи указаны в ориентации target;",
-      "расстояние измерено между ближайшими границами N20 и плеча."
+      "Left and right arms are given in the target orientation;",
+      "distance is measured between the nearest boundaries of the N20 and the arm."
     ),
     paste(names(n20_table), collapse = "\t"),
     n20_lines,
     "",
-    "QC скрининговых праймеров",
-    paste("Выбранная пара", screening_qc$pair_id, sep = "\t"),
+    "Screening primer QC",
+    paste("Selected pair", screening_qc$pair_id, sep = "\t"),
     paste(
-      "Оффтаргетные ПЦР-продукты, всего",
+      "Total off-target PCR products",
       screening_qc$offtarget_products,
       sep = "\t"
     ),
     paste(
-      "Высокорисковые оффтаргетные ПЦР-продукты",
+      "High-risk off-target PCR products",
       screening_qc$high_risk_offtarget_products,
       sep = "\t"
     ),
     paste(
-      "Оффтаргетные сайты с идеальным совпадением 3'-концов",
+      "Off-target sites with perfectly matching 3' ends",
       screening_qc$perfect_3p_offtarget_sites,
       sep = "\t"
     ),
     "",
-    "Метрики качества openPrimeR для выбранной screening-пары",
+    "openPrimeR quality metrics for the selected screening pair",
     paste(names(openprimer_table), collapse = "\t"),
     openprimer_lines
   )
@@ -4766,7 +4765,7 @@ write_design_outputs <- function(
     report = file.path(target_dir, "genome_screening_report.txt")
   )
   if (!is.data.frame(screening) || !nrow(screening)) {
-    stop("Не удалось подобрать скрининговые праймеры", call. = FALSE)
+    stop("Could not design screening primers", call. = FALSE)
   }
   screening <- mutate(
     screening,
@@ -4863,7 +4862,7 @@ write_design_outputs <- function(
     }
   }
   if (is.null(screening_selection$pair)) {
-    stop("Все screening-пары отклонены primer QC", call. = FALSE)
+    stop("All screening pairs were rejected by primer QC", call. = FALSE)
   }
   screening <- screening[
     screening_selection$pair$primer3_index[[1]],
@@ -4993,7 +4992,7 @@ write_design_outputs <- function(
       nrow(screening_rank) != 1L ||
       nrow(selected_openprimer) != 1L
   ) {
-    stop("Не удалось собрать QC выбранной screening-пары", call. = FALSE)
+    stop("Could not collect QC for the selected screening pair", call. = FALSE)
   }
   qc_warnings <- unique(trimws(c(
     homology_rank$risk_warnings[[1]],
@@ -5021,7 +5020,7 @@ write_design_outputs <- function(
     }
     warning(
       sprintf(
-        "[%s] Выбраны праймеры с QC-рисками (%s): %s",
+        "[%s] Selected primers have QC risks (%s): %s",
         feature$query_name,
         filtering_level_name(input$parameters$filtering_level),
         warning_text
@@ -5381,8 +5380,8 @@ design_from_grna_pool <- function(
     write_primer_qc_trace(primer_qc_trace, target_dir)
     reason <- sprintf(
       paste(
-        "Не удалось завершить дизайн ни для одного допустимого набора N20",
-        "(проверено уникальных диапазонов: %d)"
+        "Could not complete the design for any valid N20 set",
+        "(unique ranges checked: %d)"
       ),
       attempts
     )
@@ -5616,7 +5615,7 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
       input$primer_qc_cache
     )
     warning(
-      sprintf("openPrimeR QC недоступен: %s", conditionMessage(loaded_openprimer)),
+      sprintf("openPrimeR QC unavailable: %s", conditionMessage(loaded_openprimer)),
       call. = FALSE,
       immediate. = TRUE
     )
@@ -5643,7 +5642,7 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
     file.path(layout$tech_report, "chopchop_config.json"),
     overwrite = TRUE
   )) {
-    stop("Не удалось сохранить конфигурацию CHOPCHOP в TechReport", call. = FALSE)
+    stop("Could not save the CHOPCHOP configuration to TechReport", call. = FALSE)
   }
   results <- lapply(seq_len(nrow(targets)), function(i) {
     tryCatch(

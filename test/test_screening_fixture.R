@@ -108,7 +108,7 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
           rejection_reason = if (fallback) {
             paste0(
               "openprimer_failed:EVAL_primer_length[",
-              "primer_length_fw=24 нт (18–22 нт)]"
+              "primer_length_fw=24 nt (18–22 nt)]"
             )
           } else ""
         )
@@ -448,7 +448,7 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
       ifelse(fallback, "TRUE", "FALSE")
     )) &&
       (!fallback || any(grepl(
-        "primer_qc_warnings.*primer_length_fw=24 нт.*18–22 нт",
+        "primer_qc_warnings.*primer_length_fw=24 nt.*18–22 nt",
         report
       ))),
     "TechReport lacks the primer-QC fallback status or warnings"
@@ -463,7 +463,7 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
   assert_true(
     result$wet_lab$screening_qc$offtarget_products == 0L &&
       any(result$wet_lab$screening_qc$openprimer_metrics$metric ==
-        "Все обязательные ограничения пройдены"),
+        "All required constraints passed"),
     "WetLab data lacks screening QC"
   )
   assert_true(
@@ -521,16 +521,17 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
     encoding = "UTF-8"
   )
   assert_true(
-    all(c("Без успешного нокаута (исходный аллель), п.н.\t1241",
-          "С успешным нокаутом (редактированный аллель), п.н.\t1055") %in%
+    all(c("Without successful knockout (original allele), bp\t1241",
+          "With successful knockout (edited allele), bp\t1055") %in%
         wet_lab_report),
     "WetLab report must contain the independently expected screening sizes"
   )
   assert_true(
     any(grepl(ifelse(strand == "+", "N20_1.*59.*121", "N20_1.*121.*59"),
               wet_lab_report)) &&
-      any(grepl("Оффтаргетные ПЦР-продукты, всего.*0", wet_lab_report)) &&
-      any(grepl("Все обязательные ограничения пройдены.*пройдено", wet_lab_report)) &&
+      any(grepl("Total off-target PCR products.*0", wet_lab_report)) &&
+      paste0("All required constraints passed\t",
+             ifelse(fallback, "failed", "passed")) %in% wet_lab_report &&
       any(grepl("DECIPHER::AmplifyDNA", wet_lab_report, fixed = TRUE)),
     "Selected screening QC was not written to the WetLab report"
   )
@@ -540,7 +541,7 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
       wet_lab_report
     )) &&
       (!fallback || any(grepl(
-        "Предупреждения primer QC.*primer_length_fw=24 нт.*18–22 нт",
+        "Primer QC warnings.*primer_length_fw=24 nt.*18–22 nt",
         wet_lab_report
       ))),
     "WetLab report lacks the primer-QC fallback status or warnings"
@@ -548,11 +549,11 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
   if (fallback) {
     assert_true(
       any(grepl(
-        "primer_qc\tWARNING\t.*primer_length_fw=24 нт.*18–22 нт",
+        "primer_qc\tWARNING\t.*primer_length_fw=24 nt.*18–22 nt",
         log_lines
       )) &&
         any(grepl(
-          "QC-рисками.*primer_length_fw=24 нт.*18–22 нт",
+          "QC risks.*primer_length_fw=24 nt.*18–22 nt",
           emitted_warnings
         )),
       "Fallback warning is missing from design.log or command output"

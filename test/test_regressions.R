@@ -30,7 +30,7 @@ check(identical(minimal_pair$cassette, strrep("C", 10L)),
       "Restriction-site validation unexpectedly imposes a cassette length")
 expect_error(
   derive_sgrna_annealing(minimal_pair$cassette),
-  "несовместима со схемой sgRNA"
+  "is incompatible with the sgRNA layout"
 )
 long_arc_pair <- find_oriented_restriction_pair(
   paste0("ACTAGT", strrep("A", 40L), "CTGCAG", strrep("G", 10L)),
@@ -173,7 +173,7 @@ local({
           nrow(prepare_grna_pool(pool, 1L, "both")) == 2L,
         "Single-N20 strand policy was ignored")
   expect_error(filter_grnas(path, feature, "ncrna", 0L, DNAString(strrep("A", 200))),
-               "не совпадает")
+               "does not match")
 })
 
 # 8, 22: missing products remain a QC rejection; oversized products keep coordinates.
@@ -272,7 +272,7 @@ local({
   template <- paste0(forward, strrep("A", 40), reverse_complement_string(reverse),
                       strrep("A", 40), reverse_complement_string(reverse))
   expect_error(simulate_full_primer_pcr("multiple", "test", "synthetic", template,
-               "F", "R", forward, reverse, forward, reverse, 45), "однозначный PCR")
+               "F", "R", forward, reverse, forward, reverse, 45), "unambiguous PCR")
 })
 
 # 16: indexes follow FASTA content, Bowtie version, completeness, and success.
