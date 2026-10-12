@@ -182,6 +182,7 @@ Run tests with:
 ```bash
 bash test/test_r_environment.sh
 bash tools/run-r test/test_unit.R
+bash tools/run-r test/test_restriction_sites.R
 bash test/test_run.sh
 ```
 

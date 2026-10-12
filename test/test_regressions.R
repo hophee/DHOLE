@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
 source("oligo_designer.R")
 source("test/test_qc_policy.R")
+source("test/test_restriction_sites.R")
 
 check <- function(value, message) {
   if (!isTRUE(value)) stop(message, call. = FALSE)
@@ -225,7 +226,10 @@ local({
                PRIMER_RIGHT_SEQUENCE = reverse_complement_string(substr(seq, nchar(seq)-19L, nchar(seq))))
   }, .GlobalEnv)
   assign("evaluate_candidate_reaction", function(...) stop("reached_valid_geometry"), .GlobalEnv)
+  selected <- list(n20_range = c(1130L, 1149L),
+                   table = data.frame(target_sequence = "ACGTACGTACGTACGTACGTTGG"))
   input <- list(genome = DNAString(strrep("ACGT", 500)),
+                target_plasmid_sequence = DNAString(plasmid),
                 tools = list(primer3 = file.path(.dhole_project_dir, "oligo_designer.R"),
                              primer3_config = "unused"),
                 parameters = list(left_arm = c(min = 30L, opt = 30L, max = 30L),
@@ -234,9 +238,10 @@ local({
                                   bridge_sequence = DEFAULT_BRIDGE_SEQUENCE,
                                   sgrna_product_overlap = SGRNA_PRODUCT_OVERLAP,
                                   threads = 1L, primer3_generation = primer3_generation_defaults(),
-      primer3_buffer = primer3_buffer_parameters(), site2 = "CTGCAG"))
+      primer3_buffer = primer3_buffer_parameters(), site1 = "ACTAGT", site2 = "CTGCAG",
+       sgrna_scaffold = SGRNA_SCAFFOLD, ptarget_cassette_arc = "forward"))
   expect_error(design_homology_arms(input, list(start = 1001L, end = 1300L,
-               length = 300L, strand = "+"), list(n20_range = c(1130L, 1149L)),
+               length = 300L, strand = "+"), selected,
                "cds", directory), "reached_valid_geometry")
   check(calls == 4L, "Short CDS did not reach the second geometry at fixed arm lengths")
   assign("evaluate_candidate_reaction", function(...) list(
@@ -251,17 +256,17 @@ local({
   input$parameters$filtering_level <- 1L
   calls <- 0L
   lite <- design_homology_arms(input, list(start = 1001L, end = 1300L,
-    length = 300L, strand = "+"), list(n20_range = c(1130L, 1149L)), "cds", directory)
+    length = 300L, strand = "+"), selected, "cds", directory)
   check(!is.null(lite) && calls == 4L,
         "Lite must return the first structurally valid fallback without more attempts")
   input$parameters$filtering_level <- 2L
   calls <- 0L
   default <- design_homology_arms(input, list(start = 1001L, end = 1300L,
-    length = 300L, strand = "+"), list(n20_range = c(1130L, 1149L)), "cds", directory)
+    length = 300L, strand = "+"), selected, "cds", directory)
   check(!is.null(default) && calls > 4L, "Default must continue searching after fallback")
   assign("callPrimer3", function(...) data.frame(), .GlobalEnv)
   check(is.null(design_homology_arms(input, list(start = 1001L, end = 1300L,
-             length = 300L, strand = "+"), list(n20_range = c(1130L, 1149L)),
+             length = 300L, strand = "+"), selected,
              "cds", directory)), "Zero Primer3 candidates broke the homology search")
 })
 

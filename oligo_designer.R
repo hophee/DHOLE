@@ -88,6 +88,63 @@ circular_match_positions <- function(sequence, motif) {
   as.integer(unique(hits[hits > 0L & hits <= sequence_length]))
 }
 
+restriction_site_positions <- function(sequence, site, circular = FALSE) {
+  sequence <- toupper(as.character(sequence))
+  motifs <- unique(c(site, reverse_complement_string(site)))
+  sort(unique(as.integer(unlist(lapply(motifs, function(motif) {
+    if (circular) circular_match_positions(sequence, motif) else {
+      start(matchPattern(DNAString(motif), DNAString(sequence), fixed = TRUE))
+    }
+  })))))
+}
+
+check_restriction_sites <- function(sequence, sites, context,
+                                    allowed = rep(list(integer()), length(sites)),
+                                    circular = FALSE, offset = 0L) {
+  for (i in seq_along(sites)) {
+    extra <- setdiff(restriction_site_positions(sequence, sites[[i]], circular),
+                     allowed[[i]])
+    if (length(extra)) {
+      stop(structure(list(message = sprintf(
+        "unexpected_restriction_site:%s:%s:positions=%s", context, sites[[i]],
+        paste(extra + offset, collapse = ",")), call = NULL),
+        class = c("restriction_site_error", "error", "condition")))
+    }
+  }
+  invisible(NULL)
+}
+
+check_genome_edit_restriction_sites <- function(genome, left_end, right_start,
+                                               bridge, sites) {
+  # Retain unchanged sequence at the replacement edges before checking new sites.
+  while (nchar(bridge) && left_end + 1L < right_start &&
+         as.character(genome[left_end + 1L]) == substr(bridge, 1L, 1L)) {
+    left_end <- left_end + 1L
+    bridge <- substring(bridge, 2L)
+  }
+  while (nchar(bridge) && left_end + 1L < right_start &&
+         as.character(genome[right_start - 1L]) == substr(bridge, nchar(bridge), nchar(bridge))) {
+    right_start <- right_start - 1L
+    bridge <- substr(bridge, 1L, nchar(bridge) - 1L)
+  }
+  if (!nchar(bridge) && left_end + 1L == right_start) return(invisible(NULL))
+  flank <- max(nchar(sites)) - 1L
+  left_length <- min(flank, left_end)
+  right_length <- min(flank, length(genome) - right_start + 1L)
+  sequence <- paste0(
+    as.character(subseq(genome, start = left_end - left_length + 1L, width = left_length)),
+    bridge,
+    as.character(subseq(genome, start = right_start, width = right_length))
+  )
+  allowed <- lapply(sites, function(site) {
+    positions <- restriction_site_positions(sequence, site)
+    positions[positions + nchar(site) - 1L <= left_length |
+                positions > left_length + nchar(bridge)]
+  })
+  check_restriction_sites(sequence, sites, "edited_genome", allowed,
+                          offset = left_end - left_length)
+}
+
 find_oriented_restriction_pair <- function(
   plasmid,
   site1,
@@ -392,6 +449,20 @@ model_edited_ptargets <- function(
       any(!endsWith(inserts, site2))
   ) {
     stop("PCR assembly is not flanked by the expected site1/site2", call. = FALSE)
+  }
+  sites <- c(site1, site2)
+  check_restriction_sites(left_arm_product, sites, "left_homology_arm")
+  check_restriction_sites(right_arm_product, sites, "right_homology_arm",
+                          list(integer(), nchar(right_arm_product) - nchar(site2) - 2L))
+  for (i in seq_along(sgrna_products)) {
+    check_restriction_sites(sgrna_products[[i]], sites, paste0("sgRNA_N20_", i),
+                            list(4L, integer()))
+    check_restriction_sites(assembled[[i]], sites, paste0("cassette_N20_", i),
+                            list(4L, nchar(assembled[[i]]) - nchar(site2) - 2L))
+    check_restriction_sites(paste0(inserts[[i]], pair$backbone), sites,
+                            paste0("pTarget_N20_", i),
+                            list(1L, nchar(inserts[[i]]) - nchar(site2) + 1L),
+                            circular = TRUE)
   }
   edited <- DNAStringSet(paste0(inserts, pair$backbone))
   names(edited) <- paste0(name_prefix, "_pTarget_N20_", seq_along(edited))
@@ -3734,6 +3805,31 @@ evaluate_candidate_reaction <- function(
   )
 }
 
+check_candidate_restriction_sites <- function(input, feature, selected, pair, bridge) {
+  parameters <- input$parameters
+  arms <- vapply(seq_len(2L), function(i) {
+    sequence <- input$genome[pair$genome_start[[i]]:pair$genome_end[[i]]]
+    if (feature$strand == "-") sequence <- reverseComplement(sequence)
+    as.character(sequence)
+  }, character(1))
+  model_edited_ptargets(
+    input$target_plasmid_sequence,
+    paste0("ACG", parameters$site1, substr(selected$table$target_sequence, 1L, 20L),
+           parameters$sgrna_scaffold, parameters$sgrna_product_overlap),
+    paste0(parameters$sgrna_product_overlap, arms[[1]], bridge),
+    bridge, paste0(bridge, arms[[2]], parameters$site2, "CGT"),
+    parameters$site1, parameters$site2,
+    cassette_arc = parameters$ptarget_cassette_arc,
+    sgrna_product_overlap = parameters$sgrna_product_overlap
+  )
+  ticks <- sort(c(pair$genome_start, pair$genome_end))
+  check_genome_edit_restriction_sites(
+    input$genome, ticks[[2]], ticks[[3]],
+    if (feature$strand == "-") reverse_complement_string(bridge) else bridge,
+    c(parameters$site1, parameters$site2)
+  )
+}
+
 design_homology_arms <- function(
   input,
   feature,
@@ -3878,6 +3974,21 @@ design_homology_arms <- function(
           },
           logical(1)
         )
+        restriction_reasons <- vapply(seq_len(nrow(combinations)), function(i) {
+          if (!combinations$structure_passed[[i]]) return("")
+          pair <- bind_rows(
+            positions$left[combinations$left_index[[i]], , drop = FALSE],
+            positions$right[combinations$right_index[[i]], , drop = FALSE]
+          )
+          bridge <- design_bridge(design_class, combinations$deleted_nt[[i]],
+                                  parameters$bridge_sequence)
+          tryCatch({
+            check_candidate_restriction_sites(input, feature, selected, pair, bridge)
+            ""
+          }, restriction_site_error = conditionMessage)
+        }, character(1))
+        combinations$structure_passed <- combinations$structure_passed &
+          !nzchar(restriction_reasons)
         reaction_results <- new.env(parent = emptyenv())
         evaluate_physical_pair <- function(side, primer_index, bridge_mod) {
           key <- paste(side, primer_index, bridge_mod, sep = ":")
@@ -3991,7 +4102,9 @@ design_homology_arms <- function(
               collapse = ";"
             )
           } else {
-            rejection_reason <- "structural_constraints"
+            rejection_reason <- if (nzchar(restriction_reasons[[combination_index]])) {
+              restriction_reasons[[combination_index]]
+            } else "structural_constraints"
           }
           specificity_results <- Filter(
             Negate(is.null),
@@ -4696,6 +4809,11 @@ write_design_outputs <- function(
       frame_status <- sprintf("bridge shortened to %d nt", nchar(bridge))
     }
   }
+  check_genome_edit_restriction_sites(
+    input$genome, arms$ticks[[2]], arms$ticks[[3]],
+    if (feature$strand == "-") reverse_complement_string(bridge) else bridge,
+    c(input$parameters$site1, input$parameters$site2)
+  )
   bridge_rc <- as.character(complement(reverse(DNAString(bridge))))
   final_arms <- DNAStringSet(c(
     left_homology_arm = arms$left[
@@ -5267,7 +5385,7 @@ design_from_grna_pool <- function(
   target_dir,
   log_path
 ) {
-  attempted_ranges <- new.env(parent = emptyenv())
+  attempted_sets <- new.env(parent = emptyenv())
   primer_qc_trace <- new_primer_qc_trace()
   attempts <- 0L
   last_failure_stage <- "homology_arms"
@@ -5281,10 +5399,11 @@ design_from_grna_pool <- function(
         n20_range = range(c(candidates$n20_start, candidates$n20_end))
       )
       range_key <- paste(selected$n20_range, collapse = ":")
-      if (exists(range_key, envir = attempted_ranges, inherits = FALSE)) {
+      set_key <- paste(c(range_key, candidates$target_sequence), collapse = ":")
+      if (exists(set_key, envir = attempted_sets, inherits = FALSE)) {
         return(NULL)
       }
-      assign(range_key, TRUE, envir = attempted_ranges)
+      assign(set_key, TRUE, envir = attempted_sets)
       attempts <<- attempts + 1L
       detail <- sprintf(
         "set=%d;n20=%s;range=%s",
@@ -5381,7 +5500,7 @@ design_from_grna_pool <- function(
     reason <- sprintf(
       paste(
         "Could not complete the design for any valid N20 set",
-        "(unique ranges checked: %d)"
+        "(unique N20 sets checked: %d)"
       ),
       attempts
     )
