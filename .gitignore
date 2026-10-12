@@ -15,6 +15,7 @@
 !/test/test_run.sh
 !/test/test_r_environment.sh
 !/test/test_unit.R
+!/test/test_primer_table.R
 !/test/test_screening_fixture.R
 !/test/test_restriction_sites.R
 !/test/test_regressions.R

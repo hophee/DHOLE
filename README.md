@@ -77,6 +77,7 @@ reverse-complement strand.
 | `--primer-min-product-size` | `50` | Minimum counted amplicon size |
 | `--primer-max-product-size` | `2000` | Maximum counted amplicon size |
 | `--primer-max-offtarget-products` | `0` | Preferred maximum non-intended amplicons |
+| `--primer-table` | none | Extend a previous primer TSV with new unique sequences and gene/genome sources, saving it as `WetLab/unique_primers.tsv`. |
 
 Service sequences accept only A/C/G/T and are normalized to uppercase. The
 default scaffold is:
@@ -207,49 +208,6 @@ of Primer3 row 1, fallback warnings, and selection of row 2.
 Run `bash benchmark/run.sh [N=10] [M=10] [seed=1]` for repeated default-level-2
 designs on random MG1655 CDS. Runtime and primer/filtering plots are saved to
 a PDF; DHOLE outputs are archived automatically. See [benchmark/README.md](benchmark/README.md).
-
-## Export deletions for AutoESDCas
-
-```bash
-bash tools/export_autoesdcas.sh
-```
-
-Requires Bash and Python 3.9+ (standard library only). By default, reads
-`tempo/primersP45_Z8K/*/TechReport/` and resolves the genome FNA basename from
-each run's `run_parameters.tsv` against `tempo/`. Writes one CSV per run to
-`tempo/autoesdcas/`, plus `deletions.tsv` with genome paths, 1-based inclusive
-deletion coordinates, and the DHOLE bridge in genomic orientation. Re-running
-overwrites these export files.
-
-The script exports successful designs (`status=ok`), including designs with QC
-warnings. It takes the gap between the final homology arms in `pcr_products.tsv`,
-checks arm sequences against the FNA and `deleted_nt` against `report.tsv`, and
-verifies the edited genome model. GFF is unnecessary: full gene boundaries would
-not reproduce DHOLE's partial deletions, and gene names may have multiple hits.
-The upstream sequence is 200 bp by default, stays in FNA orientation on either
-target strand, and must map uniquely on both strands across all FNA records.
-Invalid sequences, inconsistent results, or insufficient upstream sequence stop
-the export before CSV files are written; circular wrapping is not performed.
-
-For the files in `tempo`, upload `P45p.csv` with `P45p_dnaa.fna`, and `Z8Kp.csv`
-with `Z8Kp_dnaa.fna`, as separate jobs in AutoESDCas **sgRNA Design**, with
-**Only sgRNA Design = No**. The five CSV columns follow the supplied web guide;
-`Inserted sequence` is `-` and `Manipulation type` is `deletion`.
-**These jobs reproduce the deleted intervals, but omit DHOLE's bridge insertions.**
-They therefore do not describe exactly the same final alleles. The upstream
-length is a mapping context, not a homology-arm length; arm parameters are set
-separately in AutoESDCas. The exporter does not submit jobs to the website.
-
-```bash
-# Override paths or use a longer context if the default upstream is not unique.
-bash tools/export_autoesdcas.sh --tempo /path/to/tempo \
-  --results /path/to/primersP45_Z8K --output /path/to/csv --upstream 500
-
-# Synthetic checks, without the private input data.
-bash tools/export_autoesdcas.sh --self-test
-```
-
-Set `PYTHON=/path/to/python3` if Python is not available as `python3`.
 
 ## License
 

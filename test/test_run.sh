@@ -265,6 +265,9 @@ run_integration() {
     fail "run_parameters.tsv lacks active openPrimeR constraints"
   grep -q $'^cas_plasmid_file\t' "$TECH_REPORT_DIR/run_parameters.tsv" ||
     fail "run_parameters.tsv lacks the pCas input path"
+  [[ -s "$WET_LAB_DIR/unique_primers.tsv" ]] || fail "missing unique primer collection"
+  awk -F '\t' 'NR > 1 && seen[$1]++ { exit 1 }' "$WET_LAB_DIR/unique_primers.tsv" ||
+    fail "unique primer collection contains duplicate sequences"
 
   local success_count=0
   local rejected_count=0
@@ -324,6 +327,10 @@ run_integration() {
       fail "WetLab report lacks the successful-knockout PCR size for $gene"
     grep -q 'DECIPHER::AmplifyDNA' "$wet_target_dir/wet_lab_report.txt" ||
       fail "WetLab report lacks modelled PCR products for $gene"
+    grep -q '^>concatinate_pcr_product_1$' "$wet_target_dir/pcr_products.fasta" ||
+      fail "WetLab lacks the full assembled amplicon for $gene"
+    grep -q '^concatinate_pcr_product_1' "$wet_target_dir/wet_lab_report.txt" ||
+      fail "WetLab report lacks the full assembled amplicon for $gene"
     ptarget_records="$(grep -c '^>' "$wet_target_dir/edited_pTargets.fasta" || true)"
     [[ "$ptarget_records" -eq 1 ]] ||
       fail "WetLab does not contain one edited pTarget per selected N20 for $gene"

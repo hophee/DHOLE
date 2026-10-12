@@ -467,13 +467,14 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
     "WetLab data lacks screening QC"
   )
   assert_true(
-    nrow(result$wet_lab$pcr_products) == 5L &&
+    nrow(result$wet_lab$pcr_products) == 6L &&
       all(c(
         "sgRNA_N20_1",
         "left_homology_arm",
         "right_homology_arm",
         "screening_original_genome",
-        "screening_edited_genome"
+        "screening_edited_genome",
+        "concatinate_pcr_product_1"
       ) %in% result$wet_lab$pcr_products$name) &&
       identical(
         result$wet_lab$pcr_products$length_bp,
@@ -484,6 +485,21 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
   sgrna_product <- result$wet_lab$pcr_products$sequence[
     result$wet_lab$pcr_products$name == "sgRNA_N20_1"
   ]
+  expected_assembled <- paste0(
+    "ACG", input$parameters$site1,
+    substr(selected$table$target_sequence[[1]], 1L, 20L),
+    sequence_settings$sgrna_scaffold, sequence_settings$sgrna_product_overlap,
+    donor, input$parameters$site2, "CGT"
+  )
+  for (output_dir in c(target_dir, wet_lab_dir)) {
+    products <- readDNAStringSet(file.path(output_dir, "pcr_products.fasta"))
+    table <- read_tsv(file.path(output_dir, "pcr_products.tsv"), show_col_types = FALSE)
+    assert_true(
+      identical(as.character(products[["concatinate_pcr_product_1"]]), expected_assembled) &&
+        identical(table$sequence[table$name == "concatinate_pcr_product_1"], expected_assembled),
+      "Full amplicon exports must contain the N20, scaffold and donor with each overlap once"
+    )
+  }
   assert_true(
     length(sgrna_product) == 1L &&
       identical(sgrna_product, paste0(
@@ -520,6 +536,8 @@ test_screening_fixture <- function(strand, retry = FALSE, fallback = FALSE, slac
     file.path(wet_lab_dir, "wet_lab_report.txt"),
     encoding = "UTF-8"
   )
+  assert_true(any(grepl(expected_assembled, wet_lab_report, fixed = TRUE)),
+              "The wet-lab report must contain the full assembled amplicon sequence")
   assert_true(
     all(c("Without successful knockout (original allele), bp\t1241",
           "With successful knockout (edited allele), bp\t1055") %in%

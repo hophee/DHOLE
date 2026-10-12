@@ -929,6 +929,12 @@ ptarget_model <- model_edited_ptargets(
   cassette_arc = "forward"
 )
 assert_true(
+  identical(ptarget_model$assembled, paste0(
+    "ACGACTAGT", assembly_n20, "GGGAGCGTCAACTAACCGGATGACTGCCCGCAAGTTGGCCCTGCAGCGT"
+  )),
+  "Full products must retain both terminal tails and include each overlap once"
+)
+assert_true(
   ptarget_model$restriction_pair$orientation == "+" &&
     ptarget_model$restriction_pair$site2_start == 14L + nchar(cassette_sequence),
   "Circular restriction site crossing the FASTA origin was not found"
@@ -1319,5 +1325,7 @@ local({
     values[["primer_qc_expected_size_tolerance"]] == "4" &&
     values[["primer_qc_hard_max_tm_diff"]] == "4.5", "Run report lost effective settings")
 })
+
+source("test/test_primer_table.R")
 
 message("Unit tests passed")

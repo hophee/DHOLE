@@ -466,7 +466,7 @@ model_edited_ptargets <- function(
   }
   edited <- DNAStringSet(paste0(inserts, pair$backbone))
   names(edited) <- paste0(name_prefix, "_pTarget_N20_", seq_along(edited))
-  list(sequences = edited, restriction_pair = pair)
+  list(sequences = edited, restriction_pair = pair, assembled = assembled)
 }
 
 simulate_full_primer_pcr <- function(
@@ -900,6 +900,12 @@ parse_designer_args <- function(args) {
   )
   parser <- add_argument(
     parser,
+    "--primer-table",
+    help = "Previous unique_primers.tsv to extend with this run",
+    type = "character"
+  )
+  parser <- add_argument(
+    parser,
     "--cds",
     help = "CDS targets (comma-separated or space-separated)",
     nargs = Inf
@@ -1308,6 +1314,7 @@ parse_designer_args <- function(args) {
     bridge_sequence = bridge_sequence,
     n20_mid_closeness_max = n20_mid_closeness_max,
     output_dir = normalize_scalar(parsed$output_dir),
+    primer_table = normalize_scalar(parsed$primer_table),
     cds = normalize_targets(parsed$cds),
     ncrna = normalize_targets(parsed$ncrna),
     cas_plasmid = normalize_scalar(parsed$cas_plasmid),
@@ -4532,6 +4539,74 @@ format_openprimer_report_metrics <- function(metrics) {
   )
 }
 
+read_primer_table <- function(path = character()) {
+  columns <- c("sequence", "name", "gene", "genome", "source_gene")
+  empty <- as.data.frame(setNames(rep(list(character()), length(columns)), columns))
+  if (!length(path)) return(empty)
+  table <- read_tsv(path, col_types = cols(.default = col_character()),
+                    na = character(), show_col_types = FALSE)
+  if (nrow(problems(table))) {
+    stop("Primer table contains malformed TSV rows", call. = FALSE)
+  }
+  if (!all(columns %in% names(table))) {
+    stop("Primer table must contain: ", paste(columns, collapse = ", "), call. = FALSE)
+  }
+  table <- as.data.frame(table[, columns])
+  table$sequence <- toupper(trimws(table$sequence))
+  if (anyNA(table) || any(!nzchar(as.matrix(table))) ||
+      any(!grepl("^[ACGTRYSWKMBDHVN]+$", table$sequence))) {
+    stop("Primer table contains empty values or invalid DNA sequences", call. = FALSE)
+  }
+  sources <- lapply(seq_len(nrow(table)), function(i) {
+    genes <- strsplit(table$source_gene[[i]], ";", fixed = TRUE)[[1]]
+    genomes <- strsplit(table$genome[[i]], ";", fixed = TRUE)[[1]]
+    labels <- strsplit(table$gene[[i]], ";", fixed = TRUE)[[1]]
+    if (length(genes) != length(genomes) || length(labels) != length(genes) ||
+        any(!nzchar(c(genes, genomes, labels))) ||
+        any(endsWith(c(table$source_gene[[i]], table$genome[[i]], table$gene[[i]]), ";")) ||
+        any(labels != genes & labels != paste0(genes, "_", genomes))) {
+      stop("Primer table has inconsistent gene/genome sources at row ", i, call. = FALSE)
+    }
+    data.frame(sequence = table$sequence[[i]], name = table$name[[i]],
+               gene = labels, genome = genomes, source_gene = genes)
+  })
+  bind_rows(empty, bind_rows(sources))
+}
+
+write_unique_primers <- function(results, genome_path, previous, path) {
+  genome <- tools::file_path_sans_ext(basename(genome_path))
+  successful <- results[results$status == "ok", , drop = FALSE]
+  additions <- lapply(seq_len(nrow(successful)), function(i) {
+    primers <- read_tsv(file.path(successful$wet_lab_dir[[i]], "final_sequences.txt"),
+                        col_types = cols(.default = col_character()), show_col_types = FALSE)
+    gene <- successful$gene[[i]]
+    if (any(grepl("[;\t\r\n]", c(gene, genome)))) {
+      stop("Gene and genome names cannot contain semicolons, tabs or newlines", call. = FALSE)
+    }
+    data.frame(sequence = toupper(primers$sequence), name = primers$name,
+               gene = gene, genome = genome, source_gene = gene)
+  })
+  entries <- bind_rows(previous, bind_rows(additions))
+  sources <- unique(entries[, c("source_gene", "genome")])
+  ambiguous <- unique(sources$source_gene[duplicated(sources$source_gene)])
+  entries$gene <- ifelse(entries$source_gene %in% ambiguous,
+                         paste0(entries$source_gene, "_", entries$genome), entries$source_gene)
+  rows <- lapply(unique(entries$sequence), function(sequence) {
+    same <- entries[entries$sequence == sequence, , drop = FALSE]
+    origins <- unique(same[, c("gene", "genome", "source_gene")])
+    data.frame(
+      sequence = sequence,
+      name = paste(unique(unlist(strsplit(same$name, ";", fixed = TRUE))), collapse = ";"),
+      gene = paste(origins$gene, collapse = ";"),
+      genome = paste(origins$genome, collapse = ";"),
+      source_gene = paste(origins$source_gene, collapse = ";")
+    )
+  })
+  table <- bind_rows(read_primer_table(), bind_rows(rows))
+  write_tsv(table, path)
+  invisible(table)
+}
+
 write_wet_lab_outputs <- function(
   wet_lab_dir,
   feature,
@@ -4709,8 +4784,8 @@ write_wet_lab_outputs <- function(
       sep = "\t"
     ),
     "",
-    "PCR products simulated by DECIPHER::AmplifyDNA",
-    "Sequences include full primers with auxiliary 5' tails.",
+    "PCR products simulated by DECIPHER::AmplifyDNA and assembled full products",
+    "Sequences include full primers with auxiliary 5' tails; assembly overlaps occur once.",
     paste(names(pcr_table), collapse = "\t"),
     pcr_lines,
     "",
@@ -5023,13 +5098,6 @@ write_design_outputs <- function(
     edited_genome,
     screening_product_sizes
   )
-  pcr_product_sequences <- DNAStringSet(pcr_products$sequence)
-  names(pcr_product_sequences) <- pcr_products$name
-  writeXStringSet(
-    pcr_product_sequences,
-    file.path(target_dir, "pcr_products.fasta")
-  )
-  write_tsv(pcr_products, file.path(target_dir, "pcr_products.tsv"))
   edited_ptargets <- model_edited_ptargets(
     input$target_plasmid_sequence,
     pcr_products$sequence[startsWith(pcr_products$name, "sgRNA_N20_")],
@@ -5042,6 +5110,19 @@ write_design_outputs <- function(
     input$parameters$ptarget_cassette_arc,
     input$parameters$sgrna_product_overlap
   )
+  pcr_products <- bind_rows(pcr_products, data.frame(
+    name = paste0("concatinate_pcr_product_", seq_along(sgrnas)),
+    description = paste0("Assembled sgRNA cassette and both homology arms for N20_", seq_along(sgrnas)),
+    location = "sgRNA cassette + left homology arm + right homology arm (target orientation)",
+    length_bp = nchar(edited_ptargets$assembled),
+    primers = paste(names(sgrnas), names(arm_primers)[[4L]], sep = ";"),
+    pcr_conditions = "Overlap assembly of simulated PCR products; overlaps included once",
+    sequence = edited_ptargets$assembled
+  ))
+  pcr_product_sequences <- DNAStringSet(pcr_products$sequence)
+  names(pcr_product_sequences) <- pcr_products$name
+  writeXStringSet(pcr_product_sequences, file.path(target_dir, "pcr_products.fasta"))
+  write_tsv(pcr_products, file.path(target_dir, "pcr_products.tsv"))
   writeXStringSet(
     edited_ptargets$sequences,
     file.path(target_dir, "edited_pTargets.fasta")
@@ -5704,6 +5785,7 @@ register_parallel_backend <- function(threads) {
 
 main <- function(args = commandArgs(trailingOnly = TRUE)) {
   cli <- parse_designer_args(args)
+  previous_primers <- read_primer_table(cli$primer_table)
   configure_openprimer_environment()
   cluster <- register_parallel_backend(cli$threads)
   if (!is.null(cluster)) {
@@ -5804,6 +5886,10 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
   write_tsv(
     bind_rows(results),
     file.path(layout$tech_report, "design_summary.tsv")
+  )
+  write_unique_primers(
+    bind_rows(results), input$genome_path, previous_primers,
+    file.path(layout$wet_lab, "unique_primers.tsv")
   )
 }
 
