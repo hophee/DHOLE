@@ -37,8 +37,14 @@ or GFF/GFF3 (`--annotation-format gff`) annotation, and pTarget and pCas FASTA
 files. The genome is treated as linear and plasmids as circular. pTarget must
 contain exactly one record for edited-plasmid modelling.
 
-Select targets with `--cds`, `--ncrna`, or both. Targets are matched first by
+Select targets with `--gene` (automatic), `--cds`, or `--ncrna`. Targets are matched first by
 `locus_tag`, then by `gene`; lists may be comma-separated or space-separated.
+`--gene` uses the structured annotation `type`, ignoring case and surrounding
+whitespace: `CDS` selects CDS geometry, any other type selects ncRNA geometry.
+If the entire annotation lacks type information, all automatic targets use CDS.
+An empty or unknown type in an otherwise typed annotation uses ncRNA and is
+reported. Explicit options override `--gene`; aliases resolving to the same
+record are designed once. Conflicting `--cds`/`--ncrna` assignments are errors.
 
 Each restriction site must occur once in pTarget. The selected cassette must
 start with an existing N20 followed by the selected `--sgrna-scaffold`.
@@ -71,6 +77,8 @@ reverse-complement strand.
 | `--left-arm-min/opt/max` | `300/350/400` | Left-arm structural limits |
 | `--right-arm-min/opt/max` | `400/450/500` | Right-arm structural limits |
 | `--n20-arm-min-distance` | `40` | Minimum N20-to-arm distance in nt |
+| `--ncrna-neighbor-buffer` | `20` | Minimum retained gap between the deletion and neighboring annotations |
+| `--ncrna-max-n20-attempts` | `3` | Maximum N20 sets tried for ncRNA, including the initial set |
 | `--primer-max-mismatches` | `2` | Maximum mismatches per binding site |
 | `--primer-critical-3p-bases` | `5` | Critical primer 3′ region |
 | `--primer-max-3p-mismatches` | `0` | Allowed mismatches in that region |
@@ -105,6 +113,23 @@ the feature and the integer midpoint of N20, divided by feature length.
 Candidates remain sorted by this metric even when its filter is disabled.
 `--n20-arm-min-distance` independently controls the N20-to-arm offset.
 
+ncRNA search starts with deletion of the entire annotated target, then expands
+the available boundary positions outward. Previously generated arm candidates
+remain available; either side can continue when the other reaches its limit.
+Candidates are tried in increasing total extension (left plus right), with the
+same QC gates as CDS. Within an extension, the existing QC ranking applies.
+The inclusive deletion bounds are `left_neighbor_end + buffer + 1` and
+`right_neighbor_start - buffer - 1`. Neighbors on either strand of the same
+contig count; missing neighbors use the contig edge without a buffer. Overlaps
+with other features or insufficient gaps fail explicitly. Region/contig
+container records are excluded. Arms may include retained neighboring genes.
+
+CHOPCHOP runs once over the largest permitted deletion interval. Each N20 set
+is searched through all allowed boundary extensions before moving to the next
+set, up to the attempt limit. Primer3 candidates and existing specificity and
+openPrimeR caches are reused. Output or screening QC failures also try further
+arm candidates for that set. CDS geometry and selection remain unchanged.
+
 `TechReport/run_parameters.tsv` records the original bridge and all resolved
 sgRNA sequences, including annealing regions and assembly overlap. Each target's
 `report.tsv` records `effective_bridge` in target orientation,
@@ -133,11 +158,13 @@ specificity and openPrimeR QC:
    `5 °C` are mandatory. Other openPrimeR and specificity criteria remain
    optimization criteria and may appear in a warned fallback.
 
-At every level a candidate passing the former complete strict profile is
+For CDS, at every level a candidate passing the former complete strict profile is
 preferred. If none exists, the best candidate passing the level's core gates is
 selected by intended-product availability, off-target risk, openPrimeR penalty,
 dimer risk, Tm difference, Primer3 penalty, deleted nucleotides, and original
 Primer3 order. Core gates cannot be compensated by a score.
+ncRNA prioritizes the smallest total extension passing these same mandatory
+gates; strict-profile preference and risk ranking apply within that extension.
 
 ## Output
 
@@ -173,6 +200,11 @@ distances, and QC results.
 `TechReport/` contains the design summary and run parameters. Per-target tables
 record primer binding sites, predicted amplicons, QC metrics, candidate rankings,
 and selection decisions; `design.log` records processing details.
+`target_strategies.tsv` records resolved targets, annotation types, and selection
+reasons. Each `report.tsv` includes target, allowed and actual deletion bounds,
+neighbors, buffer, per-side extension, N20 attempt count and termination reason.
+Failed targets also retain these diagnostics; expansion windows and reached
+limits are recorded in `design.log`.
 
 WetLab files are produced for successful targets. Designs using fallback
 candidates are marked in the reports. Failed targets retain technical reports
@@ -184,6 +216,7 @@ Run tests with:
 bash test/test_r_environment.sh
 bash tools/run-r test/test_unit.R
 bash tools/run-r test/test_restriction_sites.R
+bash tools/run-r test/test_ncrna.R
 bash test/test_run.sh
 ```
 

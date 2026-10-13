@@ -20,6 +20,7 @@
 !/test/test_restriction_sites.R
 !/test/test_regressions.R
 !/test/test_qc_policy.R
+!/test/test_ncrna.R
 tools/*sh
 
 # Private/local target-plasmid inputs

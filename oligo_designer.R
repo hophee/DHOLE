@@ -945,7 +945,8 @@ read_genome_annotation <- function(path, format = "bakta") {
       call. = FALSE
     )
   }
-  required <- c("type", "start", "stop", "strand", "gene", "locus_tag")
+  if (!"type" %in% names(annotation)) annotation$type <- NA_character_
+  required <- c("start", "stop", "strand", "gene", "locus_tag")
   missing <- setdiff(required, names(annotation))
   if (length(missing)) {
     stop(
@@ -966,6 +967,51 @@ read_genome_annotation <- function(path, format = "bakta") {
     )
   }
   annotation
+}
+
+resolve_targets <- function(cli, annotation) {
+  targets <- bind_rows(
+    data.frame(gene = cli$cds, class = rep("cds", length(cli$cds))),
+    data.frame(gene = cli$ncrna, class = rep("ncrna", length(cli$ncrna))),
+    data.frame(gene = cli$gene, class = rep("auto", length(cli$gene)))
+  )
+  targets$feature_index <- vapply(targets$gene, function(name) {
+    tryCatch(find_target_feature(annotation, name), error = function(e) NA_integer_)
+  }, integer(1))
+  types <- annotation$type %||% rep(NA_character_, nrow(annotation))
+  normalized <- tolower(trimws(types))
+  typed <- any(!is.na(normalized) & nzchar(normalized) & normalized != ".")
+  keys <- ifelse(is.na(targets$feature_index), paste0("missing:", targets$gene),
+                 paste0("feature:", targets$feature_index))
+  rows <- lapply(unique(keys), function(key) {
+    group <- targets[keys == key, , drop = FALSE]
+    index <- group$feature_index[[1]]
+    explicit <- group[group$class != "auto", , drop = FALSE]
+    if (length(unique(explicit$class)) > 1L) {
+      stop(sprintf("Conflicting --cds and --ncrna strategies for %s",
+                   paste(group$gene, collapse = ", ")), call. = FALSE)
+    }
+    row <- if (nrow(explicit)) explicit[1L, , drop = FALSE] else group[1L, , drop = FALSE]
+    original_type <- if (is.na(index)) NA_character_ else types[[index]]
+    normalized_type <- if (is.na(index)) NA_character_ else normalized[[index]]
+    row$annotation_type <- original_type
+    row$strategy_reason <- if (nrow(explicit)) {
+      paste0("explicit --", row$class)
+    } else if (!typed) {
+      "annotation has no types"
+    } else if (is.na(index)) {
+      "target not found; deferred to feature lookup"
+    } else if (is.na(normalized_type) || !nzchar(normalized_type) || normalized_type == ".") {
+      "annotation: empty type treated as non-CDS"
+    } else {
+      paste0("annotation: ", normalized_type)
+    }
+    if (row$class == "auto") {
+      row$class <- if (!typed || isTRUE(normalized_type == "cds")) "cds" else "ncrna"
+    }
+    row
+  })
+  bind_rows(rows)
 }
 
 find_target_feature <- function(annotation, target_name) {
@@ -1081,6 +1127,12 @@ parse_designer_args <- function(args) {
     help = "ncRNA targets (comma-separated or space-separated)",
     nargs = Inf
   )
+  parser <- add_argument(parser, "--gene",
+    help = "Targets with strategy selected from annotation type", nargs = Inf)
+  parser <- add_argument(parser, "--ncrna-neighbor-buffer",
+    help = "Minimum retained gap between ncRNA deletion and neighboring features", default = 20)
+  parser <- add_argument(parser, "--ncrna-max-n20-attempts",
+    help = "Maximum ncRNA N20 sets including the initial set", default = 3)
   parser <- add_argument(
     parser,
     "--cas-plasmid",
@@ -1541,6 +1593,13 @@ parse_designer_args <- function(args) {
     )
   }
 
+  ncrna_options <- c(neighbor_buffer = parsed$ncrna_neighbor_buffer,
+                     max_n20_attempts = parsed$ncrna_max_n20_attempts)
+  if (any(!is.finite(ncrna_options)) || any(ncrna_options != floor(ncrna_options)) ||
+      any(ncrna_options > .Machine$integer.max) ||
+      ncrna_options[["neighbor_buffer"]] < 0 || ncrna_options[["max_n20_attempts"]] < 1) {
+    stop("--ncrna-neighbor-buffer must be a non-negative integer; --ncrna-max-n20-attempts must be a positive integer", call. = FALSE)
+  }
   values <- c(
     sgrna_settings,
     list(
@@ -1557,6 +1616,9 @@ parse_designer_args <- function(args) {
       primer_table = normalize_scalar(parsed$primer_table),
       cds = normalize_targets(parsed$cds),
       ncrna = normalize_targets(parsed$ncrna),
+      gene = normalize_targets(parsed$gene),
+      ncrna_neighbor_buffer = as.integer(ncrna_options[["neighbor_buffer"]]),
+      ncrna_max_n20_attempts = as.integer(ncrna_options[["max_n20_attempts"]]),
       cas_plasmid = normalize_scalar(parsed$cas_plasmid),
       annotation_format = annotation_format,
       chopchop_script = normalize_scalar(parsed$chopchop_script),
@@ -1609,8 +1671,8 @@ parse_designer_args <- function(args) {
       call. = FALSE
     )
   }
-  if (!length(values$cds) && !length(values$ncrna)) {
-    stop("At least one of --cds or --ncrna is required", call. = FALSE)
+  if (!length(values$cds) && !length(values$ncrna) && !length(values$gene)) {
+    stop("At least one of --cds, --ncrna or --gene is required", call. = FALSE)
   }
   values
 }
@@ -3189,6 +3251,8 @@ write_run_parameters <- function(input, targets, path) {
     ),
     cds_frame_restriction = input$parameters$cds_fs,
     ncrna_frame_restriction = input$parameters$ncrna_fs,
+    ncrna_neighbor_buffer = input$parameters$ncrna_neighbor_buffer,
+    ncrna_max_n20_attempts = input$parameters$ncrna_max_n20_attempts,
     setNames(
       input$parameters$left_arm,
       paste0("left_arm_", names(input$parameters$left_arm), "_nt")
@@ -3337,6 +3401,8 @@ make_design_input <- function(cli) {
       sgrna_annealing_temp_c = cli$sgrna_annealing_temp_c,
       cds_fs = cli$cds_fs,
       ncrna_fs = cli$ncrna_fs,
+      ncrna_neighbor_buffer = cli$ncrna_neighbor_buffer,
+      ncrna_max_n20_attempts = cli$ncrna_max_n20_attempts,
       left_arm = cli$left_arm,
       right_arm = cli$right_arm,
       n20_arm_min_distance = cli$n20_arm_min_distance,
@@ -3383,6 +3449,7 @@ feature_record <- function(input, gene_name) {
   }
   list(
     index = idx,
+    annotation_type = row$type[[1]],
     query_name = gene_name,
     display_name = if (!is.na(row$gene[[1]]) && nzchar(row$gene[[1]])) {
       row$gene[[1]]
@@ -3399,14 +3466,42 @@ feature_record <- function(input, gene_name) {
   )
 }
 
+ncrna_deletion_bounds <- function(input, feature) {
+  annotation <- input$annotation
+  buffer <- input$parameters$ncrna_neighbor_buffer %||% 20L
+  others <- annotation[which(annotation$seqid == feature$contig &
+    seq_len(nrow(annotation)) != feature$index), , drop = FALSE]
+  # Contig/region containers are not neighboring genes.
+  if ("type" %in% names(others)) {
+    others <- others[!tolower(trimws(others$type)) %in% c("region", "chromosome", "contig"), , drop = FALSE]
+  }
+  label <- function(rows) {
+    if (!nrow(rows)) return("contig edge")
+    paste(paste0(ifelse(!is.na(rows$locus_tag) & nzchar(rows$locus_tag),
+                       rows$locus_tag, rows$gene), ":", rows$start, "-", rows$stop), collapse = ";")
+  }
+  overlap <- others[which(others$start <= feature$end & others$stop >= feature$start), , drop = FALSE]
+  left <- others[which(others$stop < feature$start), , drop = FALSE]
+  right <- others[which(others$start > feature$end), , drop = FALSE]
+  left <- left[which(left$stop == max(c(0L, left$stop))), , drop = FALSE]
+  right <- right[which(right$start == min(c(length(input$genome) + 1L, right$start))), , drop = FALSE]
+  lower <- if (nrow(left)) left$stop[[1]] + buffer + 1L else 1L
+  upper <- if (nrow(right)) right$start[[1]] - buffer - 1L else length(input$genome)
+  reason <- if (nrow(overlap)) {
+    paste0("Full ncRNA deletion overlaps neighboring annotation: ", label(overlap))
+  } else if (lower > feature$start || upper < feature$end) {
+    sprintf("Full ncRNA deletion %d-%d cannot preserve neighbor buffer %d nt (allowed %d-%d; left %s; right %s)",
+      feature$start, feature$end, buffer, lower, upper, label(left), label(right))
+  } else ""
+  list(start = lower, end = upper, buffer = buffer,
+       left_neighbor = label(left), right_neighbor = label(right),
+       overlapping_neighbors = if (nrow(overlap)) label(overlap) else "", reason = reason)
+}
+
 cut_interval <- function(feature, design_class, genome_length) {
+  if (design_class == "ncrna") return(c(feature$start, feature$end))
   if (feature$length <= 500) {
-    if (design_class == "ncrna") {
-      extension <- round(feature$length / 10, -1) * 2
-      interval <- c(feature$start - extension, feature$end + extension)
-    } else {
-      interval <- c(feature$start, feature$end)
-    }
+    interval <- c(feature$start, feature$end)
   } else if (feature$length < 1500) {
     midpoint <- feature$start + feature$length %/% 2
     interval <- c(midpoint - 250, midpoint + 250)
@@ -3415,10 +3510,6 @@ cut_interval <- function(feature, design_class, genome_length) {
     interval <- c(feature$start + flank, feature$end - flank)
   }
   interval <- pmax(1L, pmin(as.integer(interval), genome_length))
-  if (design_class == "ncrna") {
-    interval[[1]] <- max(interval[[1]], feature$left_bound)
-    interval[[2]] <- min(interval[[2]], feature$right_bound)
-  }
   interval
 }
 
@@ -3510,6 +3601,9 @@ run_chopchop <- function(
   target_dir
 ) {
   interval <- cut_interval(feature, design_class, length(input$genome))
+  if (design_class == "ncrna") {
+    interval <- c(feature$deletion_bounds$start, feature$deletion_bounds$end)
+  }
   target <- paste0(feature$contig, ":", interval[[1]], "-", interval[[2]])
   table_path <- file.path(target_dir, "n20_table.tsv")
   run_tool(
@@ -3817,7 +3911,9 @@ structural_pair_candidates <- function(
   feature,
   selected,
   minimum_n20_distance,
-  restrict_frame_shift
+  restrict_frame_shift,
+  design_class = "cds",
+  expansion_budget = NULL
 ) {
   left <- primers$left
   right <- primers$right
@@ -3833,7 +3929,16 @@ structural_pair_candidates <- function(
     ))
   }
   for (left_index in seq_len(nrow(left))) {
-    for (right_index in seq_len(nrow(right))) {
+    right_indices <- seq_len(nrow(right))
+    if (design_class == "ncrna" && !is.null(expansion_budget)) {
+      deletion_length <- feature$length + expansion_budget
+      right_indices <- if (plus_strand) {
+        which(right$genome_start == left$genome_end[[left_index]] + deletion_length + 1L)
+      } else {
+        which(right$genome_end == left$genome_start[[left_index]] - deletion_length - 1L)
+      }
+    }
+    for (right_index in right_indices) {
       if (plus_strand) {
         lower_boundary <- left$genome_end[[left_index]]
         upper_boundary <- right$genome_start[[right_index]]
@@ -3844,8 +3949,12 @@ structural_pair_candidates <- function(
       deleted_nt <- upper_boundary - lower_boundary - 1L
       left_distance <- selected$n20_range[[1]] - lower_boundary - 1L
       right_distance <- upper_boundary - selected$n20_range[[2]] - 1L
-      eligible <- deleted_nt >= 0L &&
-        deleted_nt < feature$length &&
+      geometry <- if (design_class == "ncrna") {
+        lower_boundary + 1L <= feature$start && upper_boundary - 1L >= feature$end &&
+          lower_boundary + 1L >= feature$deletion_bounds$start &&
+          upper_boundary - 1L <= feature$deletion_bounds$end
+      } else deleted_nt < feature$length
+      eligible <- deleted_nt >= 0L && geometry &&
         left_distance >= minimum_n20_distance &&
         right_distance >= minimum_n20_distance &&
         (!restrict_frame_shift || deleted_nt %% 3L == 0L)
@@ -4400,6 +4509,41 @@ check_candidate_restriction_sites <- function(
   )
 }
 
+ncrna_arm_candidates <- function(input, feature, side, expansion, settings, target_dir) {
+  limits <- input$parameters[[paste0(side, "_arm")]]
+  lower_side <- (side == "left") == (feature$strand == "+")
+  boundary <- if (lower_side) feature$start - expansion else feature$end + expansion
+  start <- if (lower_side) max(1L, boundary - limits[["max"]]) else boundary + 1L
+  end <- if (lower_side) boundary - 1L else min(length(input$genome), boundary + limits[["max"]])
+  if (end - start + 1L < limits[["min"]]) return(data.frame())
+  key <- paste("ncrna_primer3", feature$index, feature$strand, side, boundary, sep = ":")
+  if (exists(key, input$primer_qc_cache, inherits = FALSE)) {
+    return(get(key, input$primer_qc_cache, inherits = FALSE))
+  }
+  sequence <- input$genome[start:end]
+  if (feature$strand == "-") sequence <- reverseComplement(sequence)
+  config <- input$parameters$primer3_generation
+  primers <- callPrimer3(as.character(sequence),
+    paste0(limits[["min"]], "-", min(length(sequence), limits[["max"]])),
+    c(config$min_tm, config$opt_tm, config$max_tm), Tm_diff = config$max_tm_diff,
+    name = paste0(side, "_arm"), primer_num = config$num_return,
+    primer3 = input$tools$primer3, thermo.param = input$tools$primer3_config,
+    settings = settings, report = file.path(target_dir, paste0(side, "_arm_report.txt")),
+    force_left_start = if (side == "right") 1L else NULL,
+    force_right_start = if (side == "left") length(sequence) else NULL)
+  if (nrow(primers)) {
+    if (feature$strand == "+") {
+      primers$genome_start <- start + primers$PRIMER_LEFT_pos - 1L
+      primers$genome_end <- start + primers$PRIMER_RIGHT_pos - 1L
+    } else {
+      primers$genome_start <- end - primers$PRIMER_RIGHT_pos + 1L
+      primers$genome_end <- end - primers$PRIMER_LEFT_pos + 1L
+    }
+  }
+  assign(key, primers, input$primer_qc_cache)
+  primers
+}
+
 design_homology_arms <- function(
   input,
   feature,
@@ -4408,7 +4552,8 @@ design_homology_arms <- function(
   target_dir,
   trace = new_primer_qc_trace(),
   log_path = NULL,
-  n20_attempt = 1L
+  n20_attempt = 1L,
+  validate_design = NULL
 ) {
   interval <- cut_interval(feature, design_class, length(input$genome))
   parameters <- input$parameters
@@ -4432,78 +4577,129 @@ design_homology_arms <- function(
     stop("primer3_core not found", call. = FALSE)
   }
 
+  is_ncrna <- design_class == "ncrna"
+  if (is_ncrna) {
+    bounds <- feature$deletion_bounds
+    if (nzchar(bounds$reason)) stop(bounds$reason, call. = FALSE)
+    if (is.null(input$primer_qc_cache)) input$primer_qc_cache <- new.env(parent = emptyenv())
+    expansion_limits <- c(feature$start - bounds$start, bounds$end - feature$end)
+    genomic_minimums <- if (feature$strand == "+") c(left_limits[["min"]], right_limits[["min"]]) else c(right_limits[["min"]], left_limits[["min"]])
+    if (feature$start - 1L < genomic_minimums[[1]] ||
+        length(input$genome) - feature$end < genomic_minimums[[2]]) {
+      stop("Genome boundary prevents meeting the minimum arm length for full ncRNA deletion", call. = FALSE)
+    }
+    candidate_pool <- list(left = data.frame(), right = data.frame())
+  }
+
   attempt <- 0L
   deferred_fallbacks <- list()
   repeat {
     attempt <- attempt + 1L
-    left_length <- min(
-      left_limits[["opt"]] + attempt - 1L,
-      left_limits[["max"]]
-    )
-    right_length <- min(
-      right_limits[["opt"]] + attempt - 1L,
-      right_limits[["max"]]
-    )
-    if (feature$strand == "+") {
-      left_end <- interval[[1]] - 1L
-      left_start <- max(1L, left_end - left_length + 1L)
-      right_start <- interval[[2]] + 1L
-      right_end <- min(
-        length(input$genome),
-        right_start + right_length - 1L
-      )
-      left_seq <- input$genome[left_start:left_end]
-      right_seq <- input$genome[right_start:right_end]
+    if (is_ncrna) {
+      budget <- attempt - 1L
+      for (side in c("left", "right")) {
+        lower_side <- (side == "left") == (feature$strand == "+")
+        side_limit <- expansion_limits[[if (lower_side) 1L else 2L]]
+        if (budget <= side_limit) {
+          candidate_pool[[side]] <- bind_rows(candidate_pool[[side]],
+            ncrna_arm_candidates(input, feature, side, budget, settings, target_dir))
+        }
+      }
+      if (!is.null(log_path)) append_design_log(log_path, "ncrna_expansion", "TRY",
+        sprintf("set=%d;total_budget=%d;left_window=%d-%d;right_window=%d-%d;left_limit=%s;right_limit=%s;left_candidates=%d;right_candidates=%d",
+          n20_attempt, budget, max(bounds$start, feature$start - budget), feature$start,
+          feature$end, min(bounds$end, feature$end + budget),
+          budget >= expansion_limits[[1]], budget >= expansion_limits[[2]],
+          nrow(candidate_pool$left), nrow(candidate_pool$right)))
+      # Rebase retained candidates onto a common template for output and QC.
+      left <- candidate_pool$left
+      right <- candidate_pool$right
+      if (nrow(left) && nrow(right)) {
+        left_start <- min(left$genome_start); left_end <- max(left$genome_end)
+        right_start <- min(right$genome_start); right_end <- max(right$genome_end)
+        left_seq <- input$genome[left_start:left_end]
+        right_seq <- input$genome[right_start:right_end]
+        if (feature$strand == "-") {
+          left_seq <- reverseComplement(left_seq); right_seq <- reverseComplement(right_seq)
+        }
+        rebase <- function(rows, start, end) {
+          rows$PRIMER_LEFT_pos <- if (feature$strand == "+") rows$genome_start - start + 1L else end - rows$genome_end + 1L
+          rows$PRIMER_RIGHT_pos <- if (feature$strand == "+") rows$genome_end - start + 1L else end - rows$genome_start + 1L
+          rows
+        }
+        left <- rebase(left, left_start, left_end)
+        right <- rebase(right, right_start, right_end)
+      }
     } else {
-      right_end <- interval[[1]] - 1L
-      left_start <- interval[[2]] + 1L
-      left_end <- min(
-        length(input$genome),
-        left_start + left_length - 1L
+      left_length <- min(
+        left_limits[["opt"]] + attempt - 1L,
+        left_limits[["max"]]
       )
-      right_start <- max(1L, right_end - right_length + 1L)
-      left_seq <- complement(reverse(input$genome[left_start:left_end]))
-      right_seq <- complement(reverse(input$genome[right_start:right_end]))
-    }
-    if (
-      length(left_seq) < left_limits[["min"]] ||
-        length(right_seq) < right_limits[["min"]]
-    ) {
-      stop(
-        "Genome boundary prevents meeting the minimum arm length",
-        call. = FALSE
+      right_length <- min(
+        right_limits[["opt"]] + attempt - 1L,
+        right_limits[["max"]]
+      )
+      if (feature$strand == "+") {
+        left_end <- interval[[1]] - 1L
+        left_start <- max(1L, left_end - left_length + 1L)
+        right_start <- interval[[2]] + 1L
+        right_end <- min(
+          length(input$genome),
+          right_start + right_length - 1L
+        )
+        left_seq <- input$genome[left_start:left_end]
+        right_seq <- input$genome[right_start:right_end]
+      } else {
+        right_end <- interval[[1]] - 1L
+        left_start <- interval[[2]] + 1L
+        left_end <- min(
+          length(input$genome),
+          left_start + left_length - 1L
+        )
+        right_start <- max(1L, right_end - right_length + 1L)
+        left_seq <- complement(reverse(input$genome[left_start:left_end]))
+        right_seq <- complement(reverse(input$genome[right_start:right_end]))
+      }
+      if (
+        length(left_seq) < left_limits[["min"]] ||
+          length(right_seq) < right_limits[["min"]]
+      ) {
+        stop(
+          "Genome boundary prevents meeting the minimum arm length",
+          call. = FALSE
+        )
+      }
+      writeXStringSet(
+        DNAStringSet(c(left_arm = left_seq, right_arm = right_seq)),
+        file.path(target_dir, "homology_arms_before_primer_search.fasta")
+      )
+      primer3_config <- input$parameters$primer3_generation
+      tm <- c(primer3_config$min_tm, primer3_config$opt_tm, primer3_config$max_tm)
+      left <- callPrimer3(
+        as.character(left_seq),
+        paste0(left_limits[["min"]], "-", length(left_seq)),
+        tm,
+        Tm_diff = primer3_config$max_tm_diff,
+        "left_arm",
+        primer_num = primer3_config$num_return,
+        primer3 = input$tools$primer3,
+        thermo.param = input$tools$primer3_config,
+        settings = settings,
+        report = file.path(target_dir, "left_arm_report.txt")
+      )
+      right <- callPrimer3(
+        as.character(right_seq),
+        paste0(right_limits[["min"]], "-", length(right_seq)),
+        tm,
+        Tm_diff = primer3_config$max_tm_diff,
+        "right_arm",
+        primer_num = primer3_config$num_return,
+        primer3 = input$tools$primer3,
+        thermo.param = input$tools$primer3_config,
+        settings = settings,
+        report = file.path(target_dir, "right_arm_report.txt")
       )
     }
-    writeXStringSet(
-      DNAStringSet(c(left_arm = left_seq, right_arm = right_seq)),
-      file.path(target_dir, "homology_arms_before_primer_search.fasta")
-    )
-    primer3_config <- input$parameters$primer3_generation
-    tm <- c(primer3_config$min_tm, primer3_config$opt_tm, primer3_config$max_tm)
-    left <- callPrimer3(
-      as.character(left_seq),
-      paste0(left_limits[["min"]], "-", length(left_seq)),
-      tm,
-      Tm_diff = primer3_config$max_tm_diff,
-      "left_arm",
-      primer_num = primer3_config$num_return,
-      primer3 = input$tools$primer3,
-      thermo.param = input$tools$primer3_config,
-      settings = settings,
-      report = file.path(target_dir, "left_arm_report.txt")
-    )
-    right <- callPrimer3(
-      as.character(right_seq),
-      paste0(right_limits[["min"]], "-", length(right_seq)),
-      tm,
-      Tm_diff = primer3_config$max_tm_diff,
-      "right_arm",
-      primer_num = primer3_config$num_return,
-      primer3 = input$tools$primer3,
-      thermo.param = input$tools$primer3_config,
-      settings = settings,
-      report = file.path(target_dir, "right_arm_report.txt")
-    )
     if (
       is.data.frame(left) && nrow(left) && is.data.frame(right) && nrow(right)
     ) {
@@ -4520,7 +4716,9 @@ design_homology_arms <- function(
         feature,
         selected,
         minimum_n20_distance,
-        restrict_frame_shift
+        restrict_frame_shift,
+        design_class,
+        expansion_budget = if (is_ncrna) budget else NULL
       )
       ranking_rows <- list()
       if (nrow(combinations)) {
@@ -4541,8 +4739,7 @@ design_homology_arms <- function(
               pair_arm_lengths[[1]] <= left_limits[["max"]] &&
               pair_arm_lengths[[2]] >= right_limits[["min"]] &&
               pair_arm_lengths[[2]] <= right_limits[["max"]] &&
-              ticks[[2]] >= feature$start &&
-              ticks[[3]] <= feature$end
+              (is_ncrna || (ticks[[2]] >= feature$start && ticks[[3]] <= feature$end))
           },
           logical(1)
         )
@@ -4857,103 +5054,125 @@ design_homology_arms <- function(
         }
       }
       if (length(ranking_rows)) {
-        selection <- select_best_primer_pair(bind_rows(ranking_rows))
-        deferred <- input$parameters$filtering_level > 1L &&
-          !is.null(selection$pair) &&
-          isTRUE(selection$pair$fallback_selected[[1]])
-        trace_ranking <- selection$ranking
-        if (deferred) {
-          trace_ranking$selected_for_attempt <- trace_ranking$selected
-          provisional <- trace_ranking$selected
-          trace_ranking$selected[provisional] <- FALSE
-          trace_ranking$rejection_reason[provisional] <-
-            "deferred_fallback_candidate"
-        }
-        append_primer_qc_trace(
-          trace,
-          "homology_arms",
-          paste0("n20_", n20_attempt, "_attempt_", attempt),
-          ranking = trace_ranking
-        )
-        trace_index <- length(trace$ranking)
-        if (!is.null(log_path)) {
-          for (i in seq_len(nrow(selection$ranking))) {
-            candidate <- selection$ranking[i, , drop = FALSE]
-            status <- if (candidate$selected[[1]] && deferred) {
-              "DEFERRED"
-            } else if (candidate$selected[[1]]) {
-              "OK"
-            } else {
-              "REJECTED"
-            }
-            append_design_log(
-              log_path,
-              "primer_qc",
-              status,
-              sprintf(
-                "pair_id=%s;reason=%s",
-                candidate$pair_id[[1]],
-                if (
-                  candidate$selected[[1]] &&
-                    isTRUE(candidate$fallback_selected[[1]])
-                ) {
-                  candidate$risk_warnings[[1]]
-                } else {
-                  candidate$rejection_reason[[1]]
-                }
-              )
-            )
+        remaining_ranking <- bind_rows(ranking_rows)
+        repeat {
+          selection <- select_best_primer_pair(remaining_ranking)
+          deferred <- !is_ncrna && input$parameters$filtering_level > 1L &&
+            !is.null(selection$pair) &&
+            isTRUE(selection$pair$fallback_selected[[1]])
+          trace_ranking <- selection$ranking
+          if (deferred) {
+            trace_ranking$selected_for_attempt <- trace_ranking$selected
+            provisional <- trace_ranking$selected
+            trace_ranking$selected[provisional] <- FALSE
+            trace_ranking$rejection_reason[provisional] <-
+              "deferred_fallback_candidate"
           }
-        }
-        if (!is.null(selection$pair)) {
-          selected_rank <- selection$pair
-          pair <- bind_rows(
-            positions$left[
-              selected_rank$left_primer3_index[[1]],
-              ,
-              drop = FALSE
-            ],
-            positions$right[
-              selected_rank$right_primer3_index[[1]],
-              ,
-              drop = FALSE
-            ]
+          append_primer_qc_trace(
+            trace,
+            "homology_arms",
+            paste0("n20_", n20_attempt, "_attempt_", attempt),
+            ranking = trace_ranking
           )
-          ticks <- sort(unlist(pair[, c("genome_start", "genome_end")]))
-          position_table <- bind_rows(positions$left, positions$right)
-          design <- list(
-            pair = pair,
-            left = left_seq,
-            right = right_seq,
-            arm = arm,
-            ticks = ticks,
-            selected_pair_id = selected_rank$pair_id[[1]],
-            primer_qc_trace = trace
-          )
-          if (!deferred) {
-            write_tsv(
-              position_table,
-              file.path(target_dir, "primer3_table.tsv")
-            )
-            return(design)
-          }
-          design$ranking <- selected_rank
-          design$positions <- position_table
-          design$primer3_reports <- lapply(
-            c("left_arm_report.txt", "right_arm_report.txt"),
-            function(report_name) {
-              report_path <- file.path(target_dir, report_name)
-              if (file.exists(report_path)) {
-                readLines(report_path, warn = FALSE)
+          trace_index <- length(trace$ranking)
+          if (!is.null(log_path)) {
+            for (i in seq_len(nrow(selection$ranking))) {
+              candidate <- selection$ranking[i, , drop = FALSE]
+              status <- if (candidate$selected[[1]] && deferred) {
+                "DEFERRED"
+              } else if (candidate$selected[[1]]) {
+                "OK"
               } else {
-                character()
+                "REJECTED"
               }
+              append_design_log(
+                log_path,
+                "primer_qc",
+                status,
+                sprintf(
+                  "pair_id=%s;reason=%s",
+                  candidate$pair_id[[1]],
+                  if (
+                    candidate$selected[[1]] &&
+                      isTRUE(candidate$fallback_selected[[1]])
+                  ) {
+                    candidate$risk_warnings[[1]]
+                  } else {
+                    candidate$rejection_reason[[1]]
+                  }
+                )
+              )
             }
-          )
-          design$trace_index <- trace_index
-          deferred_fallbacks[[length(deferred_fallbacks) + 1L]] <- design
+          }
+          if (!is.null(selection$pair)) {
+            selected_rank <- selection$pair
+            pair <- bind_rows(
+              positions$left[
+                selected_rank$left_primer3_index[[1]],
+                ,
+                drop = FALSE
+              ],
+              positions$right[
+                selected_rank$right_primer3_index[[1]],
+                ,
+                drop = FALSE
+              ]
+            )
+            ticks <- sort(unlist(pair[, c("genome_start", "genome_end")]))
+            position_table <- bind_rows(positions$left, positions$right)
+            design <- list(
+              pair = pair,
+              left = left_seq,
+              right = right_seq,
+              arm = arm,
+              ticks = ticks,
+              selected_pair_id = selected_rank$pair_id[[1]],
+              primer_qc_trace = trace
+            )
+            if (!deferred) {
+              if (!is.null(validate_design)) {
+                outputs <- validate_design(design)
+                if (is.null(outputs)) {
+                  failed <- trace$ranking[[trace_index]]$pair_id == design$selected_pair_id
+                  trace$ranking[[trace_index]]$selected[failed] <- FALSE
+                  trace$ranking[[trace_index]]$rejection_reason[failed] <- "design_outputs_failed"
+                  remaining_ranking <- remaining_ranking[remaining_ranking$pair_id != design$selected_pair_id, , drop = FALSE]
+                  if (nrow(remaining_ranking)) next
+                  break
+                }
+                design$validated_outputs <- outputs
+              }
+              write_tsv(
+                position_table,
+                file.path(target_dir, "primer3_table.tsv")
+              )
+              if (is_ncrna) writeXStringSet(DNAStringSet(c(left_arm = left_seq, right_arm = right_seq)),
+                file.path(target_dir, "homology_arms_before_primer_search.fasta"))
+              return(design)
+            }
+            design$ranking <- selected_rank
+            design$positions <- position_table
+            design$primer3_reports <- lapply(
+              c("left_arm_report.txt", "right_arm_report.txt"),
+              function(report_name) {
+                report_path <- file.path(target_dir, report_name)
+                if (file.exists(report_path)) {
+                  readLines(report_path, warn = FALSE)
+                } else {
+                  character()
+                }
+              }
+            )
+            design$trace_index <- trace_index
+            deferred_fallbacks[[length(deferred_fallbacks) + 1L]] <- design
+          }
+          break
         }
       }
+    }
+    if (is_ncrna) {
+      if (budget >= sum(expansion_limits)) break
+      next
     }
     interval <- interval + c(1L, -1L)
     # Primer3 can trim the templates; enforce N20 distances on actual products.
@@ -6242,6 +6461,10 @@ design_from_grna_pool <- function(
   attempted_sets <- new.env(parent = emptyenv())
   primer_qc_trace <- new_primer_qc_trace()
   attempts <- 0L
+  max_attempts <- if (design_class == "ncrna") input$parameters$ncrna_max_n20_attempts %||% 3L else Inf
+  termination <- "aborted"
+  on.exit(update_target_report(target_dir, list(n20_sets_checked = attempts,
+    n20_attempt_limit = max_attempts, n20_search_termination = termination)), add = TRUE)
   last_failure_stage <- "homology_arms"
   result <- visit_grna_sets(
     grnas,
@@ -6254,8 +6477,14 @@ design_from_grna_pool <- function(
       )
       range_key <- paste(selected$n20_range, collapse = ":")
       set_key <- paste(c(range_key, candidates$target_sequence), collapse = ":")
+      if (design_class == "ncrna") set_key <- paste(sort(paste(candidates$genomic_location,
+        candidates$strand, candidates$target_sequence, sep = ":")), collapse = ";")
       if (exists(set_key, envir = attempted_sets, inherits = FALSE)) {
         return(NULL)
+      }
+      if (attempts >= max_attempts) {
+        termination <<- "attempt_limit_reached"
+        return(list(limit_reached = TRUE))
       }
       assign(set_key, TRUE, envir = attempted_sets)
       attempts <<- attempts + 1L
@@ -6266,6 +6495,18 @@ design_from_grna_pool <- function(
         range_key
       )
       append_design_log(log_path, "homology_arms", "TRY", detail)
+      validate_outputs <- function(arms) {
+        output <- tryCatch(write_design_outputs(input, feature, selected, arms,
+          design_class, target_dir, log_path), error = identity)
+        if (inherits(output, "error")) {
+          if (inherits(output, "primer3_error")) stop(output)
+          last_failure_stage <<- "design_outputs"
+          append_design_log(log_path, "design_outputs", "REJECTED",
+            sprintf("set=%d;pair=%s;reason=%s", attempts, arms$selected_pair_id, conditionMessage(output)))
+          return(NULL)
+        }
+        output
+      }
       arms <- design_homology_arms(
         input,
         feature,
@@ -6274,7 +6515,8 @@ design_from_grna_pool <- function(
         target_dir,
         primer_qc_trace,
         log_path,
-        attempts
+        attempts,
+        validate_design = if (design_class == "ncrna") validate_outputs else NULL
       )
       if (is.null(arms)) {
         last_failure_stage <<- if (length(primer_qc_trace$ranking)) {
@@ -6299,7 +6541,7 @@ design_from_grna_pool <- function(
       output_attempt <- tryCatch(
         list(
           ok = TRUE,
-          value = write_design_outputs(
+          value = if (design_class == "ncrna") arms$validated_outputs else write_design_outputs(
             input,
             feature,
             selected,
@@ -6345,6 +6587,7 @@ design_from_grna_pool <- function(
         sprintf("set=%d", attempts)
       )
       write_primer_qc_trace(primer_qc_trace, target_dir)
+      termination <<- "success"
       list(
         selected = selected,
         arms = arms,
@@ -6353,15 +6596,17 @@ design_from_grna_pool <- function(
       )
     }
   )
-  if (is.null(result)) {
+  if (is.null(result) || isTRUE(result$limit_reached)) {
+    termination <- if (attempts >= max_attempts) "attempt_limit_reached" else "candidates_exhausted"
     write_primer_qc_trace(primer_qc_trace, target_dir)
     reason <- sprintf(
       paste(
         "Could not complete the design for any valid N20 set",
-        "(unique N20 sets checked: %d)"
+        "(unique N20 sets checked: %d; %s)"
       ),
-      attempts
+      attempts, termination
     )
+    append_design_log(log_path, "n20_search", "STOP", reason)
     stop(structure(
       list(
         message = reason,
@@ -6393,7 +6638,38 @@ write_target_error <- function(
   )
 }
 
-design_target <- function(input, genome_name, gene_name, design_class) {
+update_target_report <- function(target_dir, values) {
+  path <- file.path(target_dir, "report.tsv")
+  previous <- if (file.exists(path)) readLines(path, warn = FALSE) else character()
+  previous <- previous[!sub("\t.*$", "", previous) %in% names(values)]
+  added <- vapply(names(values), function(name) {
+    paste(name, paste(values[[name]], collapse = ";"), sep = "\t")
+  }, character(1))
+  writeLines(c(previous, added), path)
+}
+
+strategy_report <- function(feature, design_class, strategy_reason, arms = NULL) {
+  values <- list(annotation_type = feature$annotation_type, strategy = design_class,
+    strategy_reason = strategy_reason, target_start = feature$start, target_end = feature$end)
+  if (design_class == "ncrna") {
+    bounds <- feature$deletion_bounds
+    values <- c(values, list(allowed_deletion_start = bounds$start,
+      allowed_deletion_end = bounds$end, left_neighbor = bounds$left_neighbor,
+      right_neighbor = bounds$right_neighbor, overlapping_neighbors = bounds$overlapping_neighbors,
+      ncrna_neighbor_buffer = bounds$buffer))
+  }
+  if (!is.null(arms)) {
+    values <- c(values, list(deletion_start = arms$ticks[[2]] + 1L,
+      deletion_end = arms$ticks[[3]] - 1L))
+    if (design_class == "ncrna") values <- c(values, list(
+      left_expansion_nt = feature$start - values$deletion_start,
+      right_expansion_nt = values$deletion_end - feature$end))
+  }
+  values
+}
+
+design_target <- function(input, genome_name, gene_name, design_class,
+                          strategy_reason = paste0("explicit --", design_class)) {
   safe_name <- tolower(gsub("[^A-Za-z0-9_.-]", "_", gene_name))
   layout <- output_layout(input$output_dir)
   target_dir <- file.path(
@@ -6432,6 +6708,7 @@ design_target <- function(input, genome_name, gene_name, design_class) {
   if (file.exists(error_path)) {
     unlink(error_path)
   }
+  writeLines(character(), file.path(target_dir, "report.tsv"))
   message(sprintf("[%s] %s", design_class, gene_name))
   tryCatch(
     {
@@ -6440,6 +6717,12 @@ design_target <- function(input, genome_name, gene_name, design_class) {
         log_path,
         feature_record(input, gene_name)
       )
+      if (design_class == "ncrna") feature$deletion_bounds <- ncrna_deletion_bounds(input, feature)
+      update_target_report(target_dir, c(strategy_report(feature, design_class, strategy_reason),
+        list(n20_sets_checked = 0L, n20_search_termination = "not_started")))
+      if (design_class == "ncrna" && nzchar(feature$deletion_bounds$reason)) {
+        run_design_stage("deletion_bounds", log_path, stop(feature$deletion_bounds$reason, call. = FALSE))
+      }
       run_design_stage(
         "chopchop",
         log_path,
@@ -6489,6 +6772,7 @@ design_target <- function(input, genome_name, gene_name, design_class) {
         log_path,
         write_selected_grnas(design$selected, feature, target_dir)
       )
+      update_target_report(target_dir, strategy_report(feature, design_class, strategy_reason, design$arms))
       run_design_stage(
         "wet_lab_output",
         log_path,
@@ -6526,6 +6810,7 @@ design_target <- function(input, genome_name, gene_name, design_class) {
         "unknown"
       }
       reason <- conditionMessage(e)
+      update_target_report(target_dir, list(failure_stage = stage, failure_reason = reason))
       write_target_error(
         error_path,
         gene_name,
@@ -6582,6 +6867,7 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
     foreach::getDoParWorkers()
   ))
   input <- make_design_input(cli)
+  targets <- resolve_targets(cli, input$annotation)
   message(sprintf(
     "[QC] filtering_level=%d (%s)",
     input$parameters$filtering_level,
@@ -6615,10 +6901,7 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
   layout <- output_layout(input$output_dir)
   dir.create(layout$wet_lab, recursive = TRUE, showWarnings = FALSE)
   dir.create(layout$tech_report, recursive = TRUE, showWarnings = FALSE)
-  targets <- bind_rows(
-    data.frame(gene = cli$cds, class = rep("cds", length(cli$cds))),
-    data.frame(gene = cli$ncrna, class = rep("ncrna", length(cli$ncrna)))
-  )
+  write_tsv(targets, file.path(layout$tech_report, "target_strategies.tsv"))
   write_run_parameters(
     input,
     targets,
@@ -6644,7 +6927,8 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
         input,
         genome_assets$name,
         targets$gene[[i]],
-        targets$class[[i]]
+        targets$class[[i]],
+        targets$strategy_reason[[i]]
       ),
       error = function(e) {
         stage <- if (inherits(e, "target_design_error")) {

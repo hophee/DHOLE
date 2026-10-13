@@ -2,6 +2,7 @@
 source("oligo_designer.R")
 source("test/test_qc_policy.R")
 source("test/test_restriction_sites.R")
+source("test/test_ncrna.R")
 
 check <- function(value, message) {
   if (!isTRUE(value)) stop(message, call. = FALSE)

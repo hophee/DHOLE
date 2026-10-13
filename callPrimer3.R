@@ -36,7 +36,8 @@ callPrimer3 <- function(seq,size_range='151-500',Tm=c(55,57,58), Tm_diff=5, name
                         p3_output_file=tempfile(),
                         primer3=path.expand("~/OneDrive - Griffith University/Research/Methods/Bioinformatics/primer3-2.6.1/src/primer3_core.exe"),
                         thermo.param=path.expand("~/OneDrive - Griffith University/Research/Methods/Bioinformatics/primer3-2.6.1/src/primer3_config/"),
-                        settings=path.expand("~/OneDrive - Griffith University/Research/Methods/Bioinformatics/primer3-2.6.1/settings_files/primer3_melt_mama_settings.txt")){
+                        settings=path.expand("~/OneDrive - Griffith University/Research/Methods/Bioinformatics/primer3-2.6.1/settings_files/primer3_melt_mama_settings.txt"),
+                        force_left_start=NULL, force_right_start=NULL){
   
   stderr_file <- if (is.null(report)) tempfile() else paste0(report, ".stderr.log")
   on.exit(unlink(c(p3_input_file, p3_output_file,
@@ -77,6 +78,8 @@ callPrimer3 <- function(seq,size_range='151-500',Tm=c(55,57,58), Tm_diff=5, name
             seq_target_str,  
             fw_primer_str, 
             rv_primer_str,
+            if (!is.null(force_left_start)) sprintf("SEQUENCE_FORCE_LEFT_START=%s", force_left_start),
+            if (!is.null(force_right_start)) sprintf("SEQUENCE_FORCE_RIGHT_START=%s", force_right_start),
             sequence_overhung_left,
             sequence_overhung_right,
             exclude_region_str,
@@ -112,6 +115,9 @@ callPrimer3 <- function(seq,size_range='151-500',Tm=c(55,57,58), Tm_diff=5, name
   if (returned.primers>0){
     designed.primers=data.frame()
     for (i in seq(0,returned.primers-1,1)){
+      # Forced endpoints may return primers violating constraints; never admit them.
+      if ((!is.null(force_left_start) || !is.null(force_right_start)) &&
+          any(grepl(sprintf("^PRIMER_(LEFT|RIGHT|PAIR)_%d_PROBLEMS=.+", i), lines))) next
       #IMPORT SEQUENCES
       id=sprintf(  'PRIMER_LEFT_%i_SEQUENCE',i)
       PRIMER_LEFT_SEQUENCE=as.character(out[out[,1]==id,][,2])
