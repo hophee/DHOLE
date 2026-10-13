@@ -268,6 +268,45 @@ local({
   check(is.null(design_homology_arms(input, list(start = 1001L, end = 1300L,
              length = 300L, strand = "+"), selected,
              "cds", directory)), "Zero Primer3 candidates broke the homology search")
+
+  # Multiple N20s must not stop the search before trimmed products become available.
+  input$parameters$left_arm <- c(min = 30L, opt = 60L, max = 60L)
+  input$parameters$right_arm <- c(min = 40L, opt = 70L, max = 70L)
+  assign("callPrimer3", function(seq, ...) {
+    calls <<- calls + 1L
+    if (calls <= 40L) return(data.frame())
+    data.frame(
+      PRIMER_LEFT_pos = 11L, PRIMER_RIGHT_pos = nchar(seq) - 10L,
+      PRIMER_LEFT_SEQUENCE = substr(seq, 11L, 30L),
+      PRIMER_RIGHT_SEQUENCE = reverse_complement_string(
+        substr(seq, nchar(seq) - 29L, nchar(seq) - 10L))
+    )
+  }, .GlobalEnv)
+  assign("evaluate_candidate_reaction", function(...) stop("reached_valid_geometry"), .GlobalEnv)
+  for (strand in c("+", "-")) {
+    feature <- list(start = 1001L, end = 1300L, length = 300L, strand = strand)
+    for (starts in list(c(1060L, 1221L), c(1060L, 1140L, 1221L))) {
+      selected <- list(
+        n20_range = range(c(starts, starts + 19L)),
+        table = data.frame(
+          target_sequence = rep("ACGTACGTACGTACGTACGTTGG", length(starts)),
+          n20_start = starts, n20_end = starts + 19L)
+      )
+      calls <- 0L
+      # At attempt 21 the template gap is 1021..1280, but products bound
+      # a deletion of 1011..1290, leaving >= 40 nt to both outer N20s.
+      expect_error(design_homology_arms(input, feature, selected, "cds", directory),
+                   "reached_valid_geometry")
+    }
+    selected$n20_range <- c(1040L, 1260L)
+    selected$table$n20_start <- c(1040L, 1140L, 1241L)
+    selected$table$n20_end <- selected$table$n20_start + 19L
+    calls <- 0L
+    check(is.null(design_homology_arms(input, feature, selected, "cds", directory)),
+          "Extending the search must not admit products less than 40 nt from an N20")
+    check(calls > 40L && calls <= 600L,
+          "Unsuccessful multi-N20 search did not terminate within the CDS")
+  }
 })
 
 # 11: an expected product plus a shorter product is not unique.

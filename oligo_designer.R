@@ -4956,13 +4956,8 @@ design_homology_arms <- function(
       }
     }
     interval <- interval + c(1L, -1L)
-    required_deletion <- selected$n20_range +
-      c(-minimum_n20_distance - 1L, minimum_n20_distance + 1L)
-    if (
-      interval[[1]] > required_deletion[[1]] ||
-        interval[[2]] < required_deletion[[2]] ||
-        diff(interval) + 1 < feature$length * .3
-    ) {
+    # Primer3 can trim the templates; enforce N20 distances on actual products.
+    if (diff(interval) + 1 < feature$length * .3) {
       break
     }
   }
