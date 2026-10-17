@@ -6495,6 +6495,9 @@ design_from_grna_pool <- function(
         range_key
       )
       append_design_log(log_path, "homology_arms", "TRY", detail)
+      # TODO: Match ncRNA screening/output retries to the CDS path: validate
+      # outputs after selecting homology arms, then advance to the next N20 set
+      # on rejection instead of trying more arm pairs for the same set.
       validate_outputs <- function(arms) {
         output <- tryCatch(write_design_outputs(input, feature, selected, arms,
           design_class, target_dir, log_path), error = identity)
