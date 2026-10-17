@@ -19,15 +19,15 @@ Use `bash tools/run-r` to run the project's R scripts.
 
 ```bash
 bash tools/run-r oligo_designer.R \
-  --genome genome.fasta \
-  --genome-annotation genome.gff \
+  --genome local/data/genome.fasta \
+  --genome-annotation local/data/genome.gff \
   --annotation-format gff \
-  --target-plasmid pTarget.fasta \
+  --target-plasmid local/data/pTarget.fasta \
   --filtering-level 2 \
   --site1 ACTAGT \
   --site2 CTGCAG \
-  --cas-plasmid pCas.fasta \
-  --output-dir results \
+  --cas-plasmid local/data/pCas.fasta \
+  --output-dir local/runs/results \
   --cds gene1,gene2 \
   --ncrna rna1,rna2
 ```
@@ -234,13 +234,6 @@ integration requires at least one test target to produce a complete design.
 `test_screening_fixture.R` independently verifies strict selection, rejection
 of Primer3 row 1, fallback warnings, and selection of row 2.
 
-
-
-## Benchmark
-
-Run `bash benchmark/run.sh [N=10] [M=10] [seed=1]` for repeated default-level-2
-designs on random MG1655 CDS. Runtime and primer/filtering plots are saved to
-a PDF; DHOLE outputs are archived automatically. See [benchmark/README.md](benchmark/README.md).
 
 ## License
 

@@ -11,6 +11,7 @@ readonly CHOPCHOP_REPOSITORY="https://github.com/JokingHero/chopchop.git"
 readonly CHOPCHOP_COMMIT="a5638846852368ceb524241261fcfcf774942edf"
 
 readonly TEST_DIR="$PROJECT_DIR/test"
+readonly DATA_DIR="$PROJECT_DIR/local/data"
 readonly MELTING_WRAPPER="$PROJECT_DIR/tools/melting-batch"
 readonly CHOPCHOP_PYTHON_WRAPPER="$PROJECT_DIR/tools/chopchop-python"
 readonly R_RUNNER="$PROJECT_DIR/tools/run-r"
@@ -437,7 +438,7 @@ download_gzip_if_missing() {
   [[ -s "$destination" ]] && return 0
 
   temporary_file="$(
-    mktemp "$TEST_DIR/.download.XXXXXX.gz"
+    mktemp "$DATA_DIR/.download.XXXXXX.gz"
   )" || return 1
 
 
@@ -470,16 +471,16 @@ download_gzip_if_missing() {
 
 
 prepare_test_data() {
-  mkdir -p "$TEST_DIR" || return 1
+  mkdir -p "$DATA_DIR" || return 1
 
   download_gzip_if_missing \
     "$MG1655_GENOME_URL" \
-    "$TEST_DIR/MG1655.fna" ||
+    "$DATA_DIR/MG1655.fna" ||
     return 1
 
   download_gzip_if_missing \
     "$MG1655_GFF_URL" \
-    "$TEST_DIR/MG1655.gff" ||
+    "$DATA_DIR/MG1655.gff" ||
     return 1
 
 

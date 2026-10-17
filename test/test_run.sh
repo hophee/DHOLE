@@ -4,9 +4,10 @@ set -euo pipefail
 readonly TEST_SCRIPT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 readonly TEST_DIR="$(dirname -- "$TEST_SCRIPT")"
 readonly PROJECT_DIR="$(cd -- "$TEST_DIR/.." && pwd)"
+readonly DATA_DIR="$PROJECT_DIR/local/data"
 readonly CONDA_ENV_NAME="oligo_design"
 readonly R_RUNNER="$PROJECT_DIR/tools/run-r"
-readonly OUTPUT_DIR="$TEST_DIR/test_output"
+readonly OUTPUT_DIR="$PROJECT_DIR/local/runs/tests/test_output"
 readonly WET_LAB_DIR="$OUTPUT_DIR/WetLab"
 readonly TECH_REPORT_DIR="$OUTPUT_DIR/TechReport"
 readonly SUMMARY="$TECH_REPORT_DIR/design_summary.tsv"
@@ -14,7 +15,7 @@ readonly FIXTURE_DIR="$OUTPUT_DIR/fixtures"
 readonly PLASMID="$FIXTURE_DIR/test_target_plasmid.fasta"
 readonly CAS_PLASMID="$FIXTURE_DIR/test_cas_plasmid.fasta"
 readonly TEST_GENES="recA,pta,hupB"
-readonly LOG_DIR="$TEST_DIR/test_logs"
+readonly LOG_DIR="$PROJECT_DIR/local/runs/tests/test_logs"
 readonly STAGE_TOTAL=6
 
 verbose=0
@@ -182,8 +183,8 @@ fail() {
 prepare_workspace() {
   rm -rf -- "$OUTPUT_DIR" || fail "cannot remove $OUTPUT_DIR"
   mkdir -p -- "$FIXTURE_DIR" || fail "cannot create $FIXTURE_DIR"
-  [[ -s "$TEST_DIR/MG1655.fna" ]] || fail "MG1655.fna is missing or empty"
-  [[ -s "$TEST_DIR/MG1655.gff" ]] || fail "MG1655.gff is missing or empty"
+  [[ -s "$DATA_DIR/MG1655.fna" ]] || fail "$DATA_DIR/MG1655.fna is missing or empty"
+  [[ -s "$DATA_DIR/MG1655.gff" ]] || fail "$DATA_DIR/MG1655.gff is missing or empty"
 
   printf '>synthetic_test_target_plasmid\n%s\n' \
     "GCAGGGGACTAGTACGTACGTACGTACGTACGTGTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGCTTTTTTTGAATTCTCTAGAGTCGACCTGCAG$(printf 'A%.0s' {1..200})" \
@@ -197,8 +198,8 @@ EOF
 
 run_designer_with_immediate_warnings() {
   log_command bash "$R_RUNNER" - "$PROJECT_DIR/oligo_designer.R" \
-    --genome "$TEST_DIR/MG1655.fna" \
-    --genome-annotation "$TEST_DIR/MG1655.gff" \
+    --genome "$DATA_DIR/MG1655.fna" \
+    --genome-annotation "$DATA_DIR/MG1655.gff" \
     --annotation-format gff \
     --target-plasmid "$PLASMID" \
     --cas-plasmid "$CAS_PLASMID" \
@@ -208,8 +209,8 @@ run_designer_with_immediate_warnings() {
     --cds "$TEST_GENES"
 
   bash "$R_RUNNER" - "$PROJECT_DIR/oligo_designer.R" \
-    --genome "$TEST_DIR/MG1655.fna" \
-    --genome-annotation "$TEST_DIR/MG1655.gff" \
+    --genome "$DATA_DIR/MG1655.fna" \
+    --genome-annotation "$DATA_DIR/MG1655.gff" \
     --annotation-format gff \
     --target-plasmid "$PLASMID" \
     --cas-plasmid "$CAS_PLASMID" \

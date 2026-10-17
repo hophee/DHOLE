@@ -1,3 +1,6 @@
+# Local inputs, results, notes, scripts, and archives
+/local/
+
 # IDE metadata
 /.Rproj.user/
 *.Rproj
@@ -6,39 +9,6 @@
 /chopchop/
 /primer3/
 
-# Local archival/work directory
-/tempo/
-/supplementary/
-/WORKING_NOTES.md
-/problems.md
-/test/*
-!/test/test_run.sh
-!/test/test_r_environment.sh
-!/test/test_unit.R
-!/test/test_primer_table.R
-!/test/test_screening_fixture.R
-!/test/test_restriction_sites.R
-!/test/test_regressions.R
-!/test/test_qc_policy.R
-!/test/test_ncrna.R
-tools/*sh
-
-# Private/local target-plasmid inputs
-pTarget*.fasta
-ptarget*.fasta
-
-# Local technical specifications and dated archives
-/TECHNICAL_SPECIFICATION.md
-/old_descriptions/
-
 # Generated genome indexes
-/benchmark/results-*/
 *.2bit
 *.ebwt
-
-# Other
-/protocol.md
-/poster.pdf
-/DHOLE_ARCHITECTURE_RU.md
-/README_AUDIT.md
-/WORKING_ON_*

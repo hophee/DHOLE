@@ -18,11 +18,11 @@ You will also need to install the following R packages: `dplyr`, `readr`,
 
 ```bash
 ./old_scheme/chopa.sh \
-  --genome genome.fasta \
-  --genome_annotation genome_annotation.tsv \
+  --genome local/data/genome.fasta \
+  --genome_annotation local/data/genome_annotation.tsv \
   --gene_name gene_name \
-  --target_plasmid pTarget.fasta \
-  --output_dir output_directory
+  --target_plasmid local/data/pTarget.fasta \
+  --output_dir local/runs/legacy_results
 ```
 
 - Bakta TSV and GFF/GFF3 annotation are supported through
