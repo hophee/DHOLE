@@ -1036,12 +1036,14 @@ parse_designer_args <- function(args) {
   parser <- add_argument(
     parser,
     "--genome",
-    help = "Path to the genome FASTA file"
+    help = "Genome FASTA paths (space-separated or comma-separated)",
+    nargs = Inf
   )
   parser <- add_argument(
     parser,
     "--genome-annotation",
-    help = "Path to the genome annotation file"
+    help = "Annotation paths in the same order as --genome",
+    nargs = Inf
   )
   parser <- add_argument(
     parser,
@@ -1141,8 +1143,8 @@ parse_designer_args <- function(args) {
   parser <- add_argument(
     parser,
     "--annotation-format",
-    help = "Annotation format: bakta or gff",
-    default = "gff"
+    help = "Annotation formats: bakta or gff; one for all genomes or one per genome (default: gff)",
+    nargs = Inf
   )
   parser <- add_argument(
     parser,
@@ -1350,6 +1352,17 @@ parse_designer_args <- function(args) {
     ))
     unique(targets[nzchar(targets)])
   }
+  normalize_inputs <- function(value, option) {
+    if (is.null(value) || !length(value) || all(is.na(value))) {
+      return(character())
+    }
+    fields <- trimws(unlist(strsplit(value, ",", fixed = TRUE), use.names = FALSE))
+    if (anyNA(value) || any(!nzchar(fields)) ||
+        any(!nzchar(trimws(value))) || any(grepl(",\\s*$", value))) {
+      stop(sprintf("%s cannot contain empty entries", option), call. = FALSE)
+    }
+    fields
+  }
   parse_offtarget_thresholds <- function(value) {
     value <- normalize_scalar(value)
     if (!length(value)) {
@@ -1456,8 +1469,9 @@ parse_designer_args <- function(args) {
   if (primer3_values$gc_clamp > primer3_values$max_size) {
     stop("--primer3-gc-clamp must be <= --primer3-max-size", call. = FALSE)
   }
-  annotation_format <- tolower(normalize_scalar(parsed$annotation_format))
-  if (!annotation_format %in% c("bakta", "gff")) {
+  annotation_format <- tolower(normalize_inputs(parsed$annotation_format, "--annotation-format"))
+  if (!length(annotation_format)) annotation_format <- "gff"
+  if (any(!annotation_format %in% c("bakta", "gff"))) {
     stop(
       "Invalid --annotation-format. Allowed values: bakta, gff",
       call. = FALSE
@@ -1603,8 +1617,8 @@ parse_designer_args <- function(args) {
   values <- c(
     sgrna_settings,
     list(
-      genome = normalize_scalar(parsed$genome),
-      genome_annotation = normalize_scalar(parsed$genome_annotation),
+      genome = normalize_inputs(parsed$genome, "--genome"),
+      genome_annotation = normalize_inputs(parsed$genome_annotation, "--genome-annotation"),
       target_plasmid = normalize_scalar(parsed$target_plasmid),
       site1 = normalize_restriction_site(parsed$site1, "--site1"),
       site2 = normalize_restriction_site(parsed$site2, "--site2"),
@@ -1663,13 +1677,34 @@ parse_designer_args <- function(args) {
     "--output-dir"
   )
   missing <- required_options[
-    vapply(values[required], length, integer(1)) != 1L
+    vapply(values[required], length, integer(1)) == 0L
   ]
   if (length(missing)) {
     stop(
       sprintf("Missing arguments: %s", paste(missing, collapse = ", ")),
       call. = FALSE
     )
+  }
+  if (length(values$genome_annotation) != length(values$genome)) {
+    stop("--genome-annotation must provide one annotation per genome, in the same order",
+         call. = FALSE)
+  }
+  if (!length(values$annotation_format) %in% c(1L, length(values$genome))) {
+    stop("--annotation-format must provide one format for all genomes or one per genome",
+         call. = FALSE)
+  }
+  genome_names <- tools::file_path_sans_ext(basename(values$genome))
+  if (length(genome_names) > 1L &&
+      (any(!nzchar(genome_names) | genome_names %in% c(".", "..")) ||
+       any(grepl("[;\t\r\n]", genome_names)) ||
+       anyDuplicated(tolower(genome_names)))) {
+    stop("Multiple genomes must have distinct, non-empty filenames without semicolons, tabs or newlines",
+         call. = FALSE)
+  }
+  if (length(genome_names) > 1L &&
+      any(tolower(genome_names) %in% c("design_summary.tsv", "unique_primers.tsv"))) {
+    stop("Genome filenames must not conflict with root reports: design_summary.tsv, unique_primers.tsv",
+         call. = FALSE)
   }
   if (!length(values$cds) && !length(values$ncrna) && !length(values$gene)) {
     stop("At least one of --cds, --ncrna or --gene is required", call. = FALSE)
@@ -5466,9 +5501,13 @@ read_primer_table <- function(path = character()) {
 }
 
 write_unique_primers <- function(results, genome_path, previous, path) {
-  genome <- tools::file_path_sans_ext(basename(genome_path))
   successful <- results[results$status == "ok", , drop = FALSE]
   additions <- lapply(seq_len(nrow(successful)), function(i) {
+    genome <- if ("genome" %in% names(successful)) {
+      successful$genome[[i]]
+    } else {
+      tools::file_path_sans_ext(basename(genome_path))
+    }
     primers <- read_tsv(
       file.path(successful$wet_lab_dir[[i]], "final_sequences.txt"),
       col_types = cols(.default = col_character()),
@@ -6683,6 +6722,29 @@ design_target <- function(input, genome_name, gene_name, design_class,
     layout$wet_lab,
     paste0(safe_name, "_results")
   )
+  feature_index <- tryCatch(
+    find_target_feature(input$annotation, gene_name),
+    error = function(e) NA_integer_
+  )
+  if (is.na(feature_index)) {
+    reason <- sprintf("Gene '%s' is absent from annotation '%s' for genome '%s'.",
+                      gene_name, input$annotation_path, genome_name)
+    message("[MISSING] ", reason)
+    # A missing target must not retain artifacts from an earlier successful run.
+    unlink(c(target_dir, wet_lab_dir), recursive = TRUE)
+    dir.create(target_dir, recursive = TRUE, showWarnings = FALSE)
+    writeLines(reason, file.path(target_dir, "missing_gene.txt"))
+    return(data.frame(
+      gene = gene_name,
+      class = design_class,
+      output_dir = target_dir,
+      status = "missing",
+      stage = "feature_lookup",
+      reason = reason,
+      wet_lab_dir = NA_character_
+    ))
+  }
+  unlink(file.path(target_dir, "missing_gene.txt"))
   unlink(file.path(
     wet_lab_dir,
     c(
@@ -6869,20 +6931,52 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
     foreach::getDoParName(),
     foreach::getDoParWorkers()
   ))
+  multiple <- length(cli$genome) > 1L
+  genome_names <- tools::file_path_sans_ext(basename(cli$genome))
+  results <- lapply(seq_along(cli$genome), function(i) {
+    current <- cli
+    current$genome <- cli$genome[[i]]
+    current$genome_annotation <- cli$genome_annotation[[i]]
+    current$annotation_format <- if (length(cli$annotation_format) == 1L) {
+      cli$annotation_format
+    } else {
+      cli$annotation_format[[i]]
+    }
+    if (multiple) {
+      current$output_dir <- file.path(cli$output_dir, genome_names[[i]])
+      message(sprintf("[genome %d/%d] %s", i, length(cli$genome), genome_names[[i]]))
+    }
+    result <- run_genome(current, if (multiple) read_primer_table() else previous_primers)
+    if (multiple) result$genome <- genome_names[[i]]
+    result
+  })
+  results <- bind_rows(results)
+  if (multiple) {
+    write_tsv(results, file.path(cli$output_dir, "design_summary.tsv"))
+    write_unique_primers(
+      results, cli$genome, previous_primers,
+      file.path(cli$output_dir, "unique_primers.tsv")
+    )
+  }
+  invisible(results)
+}
+
+run_genome <- function(cli, previous_primers = read_primer_table()) {
   input <- make_design_input(cli)
   targets <- resolve_targets(cli, input$annotation)
+  has_targets <- any(!is.na(targets$feature_index))
   message(sprintf(
     "[QC] filtering_level=%d (%s)",
     input$parameters$filtering_level,
     filtering_level_name(input$parameters$filtering_level)
   ))
-  loaded_openprimer <- tryCatch(
+  loaded_openprimer <- if (has_targets) tryCatch(
     load_openprimer_settings(
       input$parameters$primer_qc,
       input$parameters$primer3_buffer
     ),
     error = identity
-  )
+  ) else NULL
   if (inherits(loaded_openprimer, "error")) {
     assign(
       ".openprimer_load_error",
@@ -6910,25 +7004,28 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
     targets,
     file.path(layout$tech_report, "run_parameters.tsv")
   )
-  genome_assets <- prepare_chopchop_assets(input)
-  chopchop_config <- configure_chopchop(input, genome_assets)
-  if (
-    !file.copy(
-      chopchop_config,
-      file.path(layout$tech_report, "chopchop_config.json"),
-      overwrite = TRUE
-    )
-  ) {
-    stop(
-      "Could not save the CHOPCHOP configuration to TechReport",
-      call. = FALSE
-    )
+  genome_name <- tools::file_path_sans_ext(basename(input$genome_path))
+  if (has_targets) {
+    genome_assets <- prepare_chopchop_assets(input)
+    chopchop_config <- configure_chopchop(input, genome_assets)
+    if (
+      !file.copy(
+        chopchop_config,
+        file.path(layout$tech_report, "chopchop_config.json"),
+        overwrite = TRUE
+      )
+    ) {
+      stop(
+        "Could not save the CHOPCHOP configuration to TechReport",
+        call. = FALSE
+      )
+    }
   }
   results <- lapply(seq_len(nrow(targets)), function(i) {
     tryCatch(
       design_target(
         input,
-        genome_assets$name,
+        genome_name,
         targets$gene[[i]],
         targets$class[[i]],
         targets$strategy_reason[[i]]
@@ -6963,16 +7060,18 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
       }
     )
   })
+  results <- bind_rows(results)
   write_tsv(
-    bind_rows(results),
+    results,
     file.path(layout$tech_report, "design_summary.tsv")
   )
   write_unique_primers(
-    bind_rows(results),
+    results,
     input$genome_path,
     previous_primers,
     file.path(layout$wet_lab, "unique_primers.tsv")
   )
+  invisible(results)
 }
 
 if (sys.nframe() == 0) {

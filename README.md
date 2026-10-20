@@ -384,6 +384,15 @@ position by position. Input tables must include all five columns, nonempty
 values, valid DNA sequences, and consistent source lists. `final_sequences.txt`
 has a different schema and cannot be passed directly as `--primer-table`.
 
+### Multiple genomes in one run
+
+Pass multiple paths to `--genome` and `--genome-annotation` in matching order
+(with one shared `--annotation-format` or one per genome) to process the same
+targets for every genome, saving results under `output/<genome>/` and combined
+`design_summary.tsv` and `unique_primers.tsv` in `output/`.
+Missing genes produce console messages and a per-target `missing_gene.txt`
+without stopping the run; single-genome output paths remain unchanged.
+
 ### Reusing an output directory
 
 Genome indexes are reused when the FASTA checksum and Bowtie version marker
@@ -406,6 +415,7 @@ Run tests with:
 ```bash
 bash test/test_r_environment.sh
 bash tools/run-r test/test_unit.R
+bash tools/run-r test/test_multi_genome.R
 bash tools/run-r test/test_restriction_sites.R
 bash tools/run-r test/test_ncrna.R
 bash test/test_run.sh

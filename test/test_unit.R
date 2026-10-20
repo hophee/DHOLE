@@ -1172,21 +1172,16 @@ stale_wet_lab_files <- file.path(
 file.create(stale_wet_lab_files)
 error_input <- list(
   output_dir = error_root,
+  annotation_path = "annotation.gff",
   annotation = data.frame(
     locus_tag = character(),
     gene = character()
   )
 )
-target_error <- tryCatch(
-  {
-    design_target(error_input, "genome", "missing_gene", "cds")
-    NULL
-  },
-  error = identity
-)
+missing_result <- design_target(error_input, "genome", "missing_gene", "cds")
 assert_true(
-  inherits(target_error, "target_design_error"),
-  "Target error was not classified"
+  missing_result$status == "missing" && missing_result$stage == "feature_lookup",
+  "Missing target was not classified"
 )
 target_error_dir <- file.path(
   error_root,
@@ -1194,16 +1189,12 @@ target_error_dir <- file.path(
   "missing_gene_results"
 )
 assert_true(
-  file.exists(file.path(target_error_dir, "design.log")),
-  "design.log was not created"
+  identical(list.files(target_error_dir), "missing_gene.txt"),
+  "Missing target must produce exactly one diagnostic file"
 )
-assert_true(
-  file.exists(file.path(target_error_dir, "error.txt")),
-  "error.txt was not created"
-)
-error_text <- readLines(file.path(target_error_dir, "error.txt"))
-assert_true(any(grepl("stage\\tfeature_lookup", error_text)), "Stage is absent")
-assert_true(any(grepl("gene\\tmissing_gene", error_text)), "Gene is absent")
+error_text <- readLines(file.path(target_error_dir, "missing_gene.txt"))
+assert_true(any(grepl("annotation.gff", error_text, fixed = TRUE)), "Annotation is absent")
+assert_true(any(grepl("missing_gene", error_text, fixed = TRUE)), "Gene is absent")
 assert_true(
   !any(file.exists(stale_wet_lab_files)),
   "A failed target left stale WetLab output"
@@ -1327,5 +1318,6 @@ local({
 })
 
 source("test/test_primer_table.R")
+source("test/test_multi_genome.R")
 
 message("Unit tests passed")
