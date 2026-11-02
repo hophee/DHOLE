@@ -20,6 +20,81 @@ exist. It installs R packages, builds Primer3, prepares CHOPCHOP and the tool
 wrappers, and downloads the MG1655 genome and annotation used by the tests.
 Use `bash tools/run-r` to run the project's R scripts.
 
+### Diagnosing a quiet R installation
+
+After `Installing R dependencies with pak...`, the installer is inside
+`pak::pkg_install()`. Ten minutes without output alone does not distinguish
+network waits, dependency resolution, compilation or a stuck worker.
+`tools/run-r` already disables Conda output capture.
+
+Each R installation saves its combined output to
+`local/install-logs/r-dependencies.XXXXXX/install.log` and retains `install.R`
+beside it. The printed directory is unique per run, including failed runs.
+The log includes the start time, R PID, temporary directory, session information,
+repositories, requested packages and exit status when the process returns.
+It does not automatically terminate long builds.
+
+Network requests default to a 15-second connection timeout, a 180-second total
+request timeout and a low-speed timeout (below 1 byte/second for 60 seconds).
+HTTP retries are disabled so failures surface promptly. These limits apply to
+individual requests, not to the entire installation or compilation. Override
+`PKGCACHE_CONNECTTIMEOUT`, `PKGCACHE_TIMEOUT`, `PKGCACHE_LOW_SPEED_LIMIT`,
+`PKGCACHE_LOW_SPEED_TIME`, `PKGCACHE_RETRY` or `PKG_HTTP_RETRY` in the shell if
+needed. For example, `PKGCACHE_TIMEOUT=600 bash install.sh` allows slower large
+downloads. Timeouts bound network waits; they do not fix an unavailable server.
+
+While the installation is quiet, open another terminal on the same server.
+Use the R PID printed in the log; for older installers find it with
+`pgrep -a -u "$USER" -f 'install-r-dependencies|install.R'`.
+
+```bash
+diag=local/install-logs/r-dependencies.XXXXXX  # actual printed directory
+r_pid=12345                                  # actual R PID
+tail -f "$diag/install.log"                  # Ctrl-C stops only tail
+pstree -ap "$r_pid" | tee "$diag/process-tree.txt"
+ps -u "$USER" -o pid,ppid,stat,etime,time,pcpu,pmem,wchan:32,args --forest \
+  > "$diag/processes.txt"
+free -h > "$diag/memory.txt"
+df -h . /tmp > "$diag/disk.txt"
+```
+
+Take a second process snapshot after 30–60 seconds. Increasing CPU time in
+compiler processes suggests an active build; memory pressure, swapping or full
+filesystems need addressing before retrying. A sleeping parent R process alone
+does not establish a hang: inspect its workers in the process tree.
+
+If `strace` is available and attaching is permitted, capture a bounded trace
+of the suspect worker (use its PID from the tree, not just the waiting parent):
+
+```bash
+worker_pid=12346
+timeout --signal=INT 30s strace -f -tt -T -s 128 \
+  -p "$worker_pid" -o "$diag/strace.txt"
+```
+
+The timeout stops the tracer; it does not intentionally kill the installer.
+Inspect connection failures/timeouts, repeated file operations and worker waits.
+For a suspect repository URL, test it with
+`curl -IL --connect-timeout 10 --max-time 30 'URL'` on the same server.
+Fix the demonstrated DNS/proxy/CA/repository problem; do not disable TLS checks.
+For excessive parallel compilation, retry with fewer workers using
+`options(Ncpus = 2L)` before `pak::pkg_install()` in the saved script.
+
+After stopping the previous installation, rerun only the R stage if needed:
+
+```bash
+set -o pipefail
+PKG_SYSREQS=false USE_BUNDLED_LIBUV=1 \
+  bash tools/run-r "$diag/install.R" 2>&1 | tee "$diag/retry.log"
+```
+
+Then rerun `bash install.sh` to finish the remaining steps and runtime checks.
+Do not run two installers against the same environment concurrently. Preserve
+the log and process snapshots even if the cause remains unknown; report the
+last output, elapsed time and whether CPU time changes. Review paths and URLs
+in diagnostics before sharing them. Avoid deleting caches or package locks
+until their involvement is established and all installation workers have stopped.
+
 ## Usage
 
 ```bash
