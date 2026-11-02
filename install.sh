@@ -201,22 +201,37 @@ install_chopchop_python() {
 
 
 install_r_dependencies() {
+  local diagnostic_dir
   local temporary_script
 
-  temporary_script="$(
-    mktemp "${TMPDIR:-/tmp}/install-r-dependencies.XXXXXX.R"
+  mkdir -p "$PROJECT_DIR/local/install-logs" || return 1
+  diagnostic_dir="$(
+    mktemp -d "$PROJECT_DIR/local/install-logs/r-dependencies.XXXXXX"
   )" || return 1
+  temporary_script="$diagnostic_dir/install.R"
+  printf 'R installation diagnostics: %s\n' "$diagnostic_dir"
 
   cat > "$temporary_script" <<'RSCRIPT'
 options(
   pkg.sysreqs = FALSE,
   pkg.use_bioconductor = TRUE,
 
-  # Verbose terminal progress
+  # Keep progress readable in the persistent log.
   cli.progress_show_after = 0,
   cli.progress_clear = FALSE,
-  rlib_interactive = TRUE
+  cli.dynamic = FALSE,
+  rlib_interactive = FALSE,
+  error = function() {
+    traceback(3)
+    quit(save = "no", status = 1L, runLast = FALSE)
+  }
 )
+
+message("Started: ", format(Sys.time(), tz = "UTC", usetz = TRUE))
+message("R PID: ", Sys.getpid(), "; temporary directory: ", tempdir())
+print(sessionInfo())
+message("Configured CRAN repositories:")
+print(getOption("repos"))
 
 if (!requireNamespace("pak", quietly = TRUE)) {
   stop("pak is not installed", call. = FALSE)
@@ -243,6 +258,8 @@ target_library <- normalizePath(.Library, mustWork = TRUE)
 
 message("R version: ", R.version.string)
 message("Conda R library: ", target_library)
+message("pak version: ", as.character(packageVersion("pak")))
+message("Requested packages: ", paste(packages, collapse = ", "))
 message("Installing R dependencies with pak...")
 message(
   "pak may report missing OS packages even with PKG_SYSREQS=false. ",
@@ -259,13 +276,21 @@ invisible(pak::pkg_install(
 
 message("pak installation completed.")
 RSCRIPT
+  [[ $? -eq 0 ]] || return 1
 
   PKG_SYSREQS=false \
   USE_BUNDLED_LIBUV=1 \
-  bash "$R_RUNNER" "$temporary_script"
+  PKGCACHE_CONNECTTIMEOUT="${PKGCACHE_CONNECTTIMEOUT:-15}" \
+  PKGCACHE_TIMEOUT="${PKGCACHE_TIMEOUT:-180}" \
+  PKGCACHE_LOW_SPEED_LIMIT="${PKGCACHE_LOW_SPEED_LIMIT:-1}" \
+  PKGCACHE_LOW_SPEED_TIME="${PKGCACHE_LOW_SPEED_TIME:-60}" \
+  PKGCACHE_RETRY="${PKGCACHE_RETRY:-false}" \
+  PKG_HTTP_RETRY="${PKG_HTTP_RETRY:-false}" \
+  bash "$R_RUNNER" "$temporary_script" 2>&1 | tee "$diagnostic_dir/install.log"
 
   local status=$?
-  rm -f "$temporary_script"
+  printf 'R installation finished: %s; exit status: %s\n' \
+    "$(date -u +%FT%TZ)" "$status" | tee -a "$diagnostic_dir/install.log" || return 1
   return "$status"
 }
 
