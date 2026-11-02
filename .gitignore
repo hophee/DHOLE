@@ -12,3 +12,6 @@
 # Generated genome indexes
 *.2bit
 *.ebwt
+
+# Python benchmark/test bytecode
+__pycache__/

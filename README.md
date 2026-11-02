@@ -20,6 +20,9 @@ exist. It installs R packages, builds Primer3, prepares CHOPCHOP and the tool
 wrappers, and downloads the MG1655 genome and annotation used by the tests.
 Use `bash tools/run-r` to run the project's R scripts.
 
+For repeated MG1655 CDS benchmarks, AutoESDCas input export, and UHA/DHA primer
+Tm comparisons, see [benchmark/README.md](benchmark/README.md).
+
 ## Usage
 
 ```bash
