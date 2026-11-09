@@ -7,7 +7,8 @@ expect_error <- function(expr, pattern) {
   stopifnot(inherits(error, "error"), grepl(pattern, conditionMessage(error)))
 }
 
-stopifnot(identical(benchmark_counts(character()), c(10L, 10L, 1L)))
+stopifnot(identical(benchmark_counts(character()), c(10L, 10L, 408151205L)),
+          identical(benchmark_counts(c("2", "3", "42")), c(2L, 3L, 42L)))
 for (bad in c("0", "-1", "2.5", "NA", "2147483648")) expect_error(benchmark_counts(bad), "positive integers")
 annotation <- data.frame(type = c("CDS", "CDS", "ncRNA"), locus_tag = c("b2", "b1", "rna"),
   gene = c("two", "one", "rna"), start = c(100, 300, 600), stop = c(200, 499, 700))
@@ -18,6 +19,24 @@ stopifnot(nrow(sample_cds(rbind(annotation, annotation[1, ]), 2, 1)) == 2L)
 split_cds <- rbind(transform(annotation[1, ], type = "gene", start = 50, stop = 250),
                    annotation[1, ], transform(annotation[1, ], start = 220, stop = 250))
 stopifnot(sample_cds(split_cds, 1, 1)$gene_nt == 201)
+
+# Each run gets a reproducible seed and a fresh panel, independent of input order.
+pool <- data.frame(type = "CDS", locus_tag = sprintf("b%03d", 1:120),
+  gene = paste0("gene", 1:120), start = 1:120, stop = 101:220)
+panels <- sample_benchmark_cds(pool, 10, 10, 408151205L)
+stopifnot(nrow(panels) == 100L, !anyDuplicated(panels$target),
+          all(table(panels$run) == 10L), length(unique(panels$run_seed)) == 10L,
+          identical(panels, sample_benchmark_cds(pool[120:1, ], 10, 10, 408151205L)),
+          !identical(panels$target, sample_benchmark_cds(pool, 10, 10, 42)$target),
+          identical(panels[1:20, ], sample_benchmark_cds(pool, 2, 10, 408151205L)))
+used <- character()
+for (run in 1:10) {
+  panel <- panels[panels$run == run, ]
+  stopifnot(length(unique(panel$run_seed)) == 1L,
+    identical(panel$target, sample_cds(pool, 10, panel$run_seed[[1]], exclude = used)$target))
+  used <- c(used, panel$target)
+}
+expect_error(sample_benchmark_cds(pool, 13, 10, 408151205L), "available CDS")
 stopifnot(read_benchmark_result("nonexistent", "b1", 7)$status == "process_error",
           read_benchmark_result("nonexistent", "b1", 0)$status == "missing_result")
 
@@ -108,7 +127,7 @@ project <- file.path(tmp, "project with spaces")
 dir.create(file.path(project, "benchmark"), recursive = TRUE)
 dir.create(file.path(project, "local/data"), recursive = TRUE)
 file.copy("benchmark/run_dhole.R", file.path(project, "benchmark/run_dhole.R"))
-fixture <- data.frame(type = "CDS", locus_tag = c("b1", "b2", "b3"), gene = c("one", "two", "three"),
+fixture <- data.frame(type = "CDS", locus_tag = paste0("b", 1:6), gene = paste0("gene", 1:6),
   start = 301, stop = 700, seqid = "chr", strand = "+")
 write.table(fixture, file.path(project, "local/data/MG1655.gff"), sep = "\t", row.names = FALSE, quote = FALSE)
 writeLines(c(">chr", genome), file.path(project, "local/data/MG1655.fna"))
@@ -117,11 +136,11 @@ writeLines(c(
   'main <- function(args) {',
   ' target <- args[[match("--cds", args) + 1L]]',
   ' out <- args[[match("--output-dir", args) + 1L]]',
-  ' if (target == "b2") quit(status = 7)',
+  ' if (target %in% c("b2", "b5")) quit(status = 7)',
   ' tech <- file.path(out, "TechReport")',
   ' dest <- file.path(tech, paste0(target, "_results"))',
   ' dir.create(dest, recursive = TRUE)',
-  ' summary <- data.frame(gene = target, status = if (target == "b3") "error" else "ok", reason = "fixture", output_dir = dest)',
+  ' summary <- data.frame(gene = target, status = if (target %in% c("b3", "b6")) "error" else "ok", reason = "fixture", output_dir = dest)',
   ' write.table(summary, file.path(tech, "design_summary.tsv"), sep = "\t", row.names = FALSE, quote = FALSE)',
   ' writeLines(c("deletion_start\t401", "deletion_end\t600", "deleted_nt\t200"), file.path(dest, "report.tsv"))',
   '}'), file.path(project, "oligo_designer.R"))
@@ -131,9 +150,24 @@ log <- file.path(tmp, "runner.log")
 status <- system2(file.path(R.home("bin"), "Rscript"), vapply(argv, shQuote, character(1)), stdout = log, stderr = log)
 if (status != 0) stop(paste(readLines(log), collapse = "\n"))
 timing <- read.csv(file.path(output, "timings.csv"))
+sampled <- read.csv(file.path(output, "sampled_cds.csv"))
+totals <- read.csv(file.path(output, "run_timings.csv"))
 stopifnot(nrow(timing) == 6L, all(table(timing$status) == 2L), all(timing$elapsed_s >= 0),
   all(timing$gene_nt == 400), all(timing$deleted_nt[timing$status == "ok"] == 200),
   all(is.na(timing$deleted_nt[timing$status != "ok"])), all(timing$exit_code[timing$target == "b2"] == 7L),
-  identical(timing$target[1:3], timing$target[4:6]), nrow(read.csv(file.path(output, "run_timings.csv"))) == 2L)
+  !anyDuplicated(timing$target), identical(timing$target, sampled$target),
+  identical(timing$gene, sampled$gene), identical(timing$run, sampled$run),
+  identical(timing$run_seed, sampled$run_seed), length(unique(sampled$run_seed)) == 2L,
+  identical(totals$run_seed, sampled$run_seed[c(1, 4)]), nrow(totals) == 2L)
+# Re-running the CLI with the same main seed reproduces the saved plan.
+argv[[6]] <- paste0(output, "-repeated")
+status <- system2(file.path(R.home("bin"), "Rscript"), vapply(argv, shQuote, character(1)), stdout = log, stderr = log)
+if (status != 0) stop(paste(readLines(log), collapse = "\n"))
+stopifnot(identical(sampled, read.csv(file.path(argv[[6]], "sampled_cds.csv"))))
+# Insufficient CDS must fail before creating output or starting any workers.
+argv[[3]] <- "3"
+argv[[6]] <- paste0(output, "-insufficient")
+status <- suppressWarnings(system2(file.path(R.home("bin"), "Rscript"), vapply(argv, shQuote, character(1)), stdout = log, stderr = log))
+stopifnot(status != 0L, !file.exists(argv[[6]]), any(grepl("available CDS", readLines(log))))
 })
 cat("Benchmark R tests passed.\n")

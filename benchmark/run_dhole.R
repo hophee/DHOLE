@@ -1,17 +1,19 @@
 #!/usr/bin/env Rscript
 
 benchmark_counts <- function(args) {
-  values <- c(10L, 10L, 1L)
+  # A=01, ..., Z=26: DHOLE -> 04 08 15 12 05 -> 408151205.
+  main_seed <- as.integer(paste(sprintf("%02d", match(strsplit("DHOLE", "")[[1]], LETTERS)), collapse = ""))
+  values <- c(10L, 10L, main_seed)
   for (i in seq_len(min(length(args), 3L))) {
     x <- suppressWarnings(as.numeric(args[[i]]))
     if (!is.finite(x) || x < 1 || x != floor(x) || x > .Machine$integer.max)
-      stop("N1, N2 and seed must be positive integers")
+      stop("N1, N2 and main_seed must be positive integers")
     values[[i]] <- as.integer(x)
   }
   values
 }
 
-sample_cds <- function(annotation, n, seed) {
+sample_cds <- function(annotation, n, seed, exclude = character()) {
   x <- annotation[toupper(trimws(annotation$type)) %in% "CDS", , drop = FALSE]
   x$target <- ifelse(!is.na(x$locus_tag) & nzchar(x$locus_tag), x$locus_tag, x$gene)
   x <- x[!is.na(x$target) & nzchar(x$target), , drop = FALSE]
@@ -22,12 +24,28 @@ sample_cds <- function(annotation, n, seed) {
   index[is.na(index)] <- match(targets[is.na(index)], annotation$gene)
   x <- annotation[index, , drop = FALSE]
   x$target <- targets
+  x <- x[!x$target %in% exclude, , drop = FALSE]
   x <- x[order(x$target, method = "radix"), , drop = FALSE]
   if (n > nrow(x)) stop("N2 exceeds the available CDS count: ", nrow(x))
   set.seed(seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
   x <- x[sample.int(nrow(x), n), , drop = FALSE]
   x$gene_nt <- x$stop - x$start + 1L
   x
+}
+
+sample_benchmark_cds <- function(annotation, n1, n2, main_seed) {
+  set.seed(main_seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
+  run_seeds <- sample.int(.Machine$integer.max, n1, replace = FALSE)
+  panels <- vector("list", n1)
+  used <- character()
+  for (run in seq_len(n1)) {
+    panel <- sample_cds(annotation, n2, run_seeds[[run]], exclude = used)
+    panel$run <- run
+    panel$run_seed <- run_seeds[[run]]
+    panels[[run]] <- panel
+    used <- c(used, panel$target)
+  }
+  do.call(rbind, panels)
 }
 
 read_benchmark_result <- function(directory, target, exit_code) {
@@ -62,15 +80,18 @@ read_benchmark_result <- function(directory, target, exit_code) {
 
 main <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (any(args %in% c("-h", "--help"))) {
-    cat("Usage: bash tools/run-r benchmark/run_dhole.R [N1=10] [N2=10] [seed=1] [output_dir]\n",
-        "Same sampled MG1655 CDS in each repetition; one DHOLE process per CDS.\n",
+    cat("Usage: bash tools/run-r benchmark/run_dhole.R [N1=10] [N2=10] [main_seed=408151205] [output_dir]\n",
+        "DHOLE -> A=01..Z=26 -> 04 08 15 12 05 -> main_seed=408151205.\n",
+        "Main seed generates N1 run seeds; each run samples N2 new MG1655 CDS, without reuse.\n",
+        "One DHOLE process per CDS. Requires at least N1*N2 available CDS.\n",
         "DHOLE_TARGET_PLASMID / DHOLE_CAS_PLASMID optionally select real FASTA inputs.\n")
     return(invisible(NULL))
   }
-  if (length(args) > 4L) stop("Expected N1, N2, seed, output_dir; see --help")
+  if (length(args) > 4L) stop("Expected N1, N2, main_seed, output_dir; see --help")
   counts <- benchmark_counts(args)
-  n1 <- counts[[1]]; n2 <- counts[[2]]; seed <- counts[[3]]
+  n1 <- counts[[1]]; n2 <- counts[[2]]; main_seed <- counts[[3]]
   script <- sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[[1]])
+  script <- gsub("~+~", " ", script, fixed = TRUE) # R escapes spaces in --file.
   root <- normalizePath(file.path(dirname(script), ".."), mustWork = TRUE)
   genome <- file.path(root, "local/data/MG1655.fna")
   gff <- file.path(root, "local/data/MG1655.gff")
@@ -78,7 +99,7 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
     if (!file.exists(path) || file.info(path)$size == 0) stop("Missing input: ", path, "; run install.sh")
   dhole <- new.env()
   source(file.path(root, "oligo_designer.R"), local = dhole)
-  sampled <- sample_cds(dhole$read_genome_annotation(gff, "gff"), n2, seed)
+  sampled <- sample_benchmark_cds(dhole$read_genome_annotation(gff, "gff"), n1, n2, main_seed)
   out <- if (length(args) == 4L) args[[4]] else file.path(root, "local/runs/benchmark",
     paste0("results-", format(Sys.time(), "%Y%m%d-%H%M%S"), "-", Sys.getpid()))
   if (file.exists(out)) stop("Output already exists: ", out)
@@ -99,9 +120,11 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
   if (nzchar(cas)) cas <- normalizePath(cas)
   write.csv(sampled, file.path(out, "sampled_cds.csv"), row.names = FALSE)
   inputs <- c(genome, gff, plasmid, cas[nzchar(cas)])
-  writeLines(c(sprintf("N1=%d N2=%d seed=%d filtering_level=2", n1, n2, seed),
+  writeLines(c(sprintf("N1=%d N2=%d main_seed=%d filtering_level=2", n1, n2, main_seed),
+    "Default main seed: DHOLE -> A=01..Z=26 -> 04 08 15 12 05 -> 408151205.",
     "Timing: one fresh DHOLE process per gene, including startup and index generation.",
-    "Sampling: one fixed CDS panel, repeated N1 times; per-process R seed is fixed.",
+    "Sampling: main_seed generates N1 run seeds; each selects N2 CDS without reuse across runs.",
+    "Run seeds and panels: sampled_cds.csv. Per-process R seed: main_seed.",
     paste(names(tools::md5sum(inputs)), tools::md5sum(inputs)),
     capture.output(sessionInfo())), file.path(out, "metadata.txt"))
   worker <- file.path(out, "worker.R")
@@ -109,13 +132,14 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
     "source(args[[1]])", "set.seed(as.integer(args[[2]]))", "main(args[-c(1, 2)])"), worker)
   timing_file <- file.path(out, "timings.csv")
   for (run in seq_len(n1)) {
+    panel <- sampled[sampled$run == run, , drop = FALSE]
     for (i in seq_len(n2)) {
-      target <- sampled$target[[i]]
+      target <- panel$target[[i]]
       attempt <- sprintf("run_%03d_gene_%04d", run, i)
       relative_dir <- file.path("raw", attempt)
       directory <- file.path(out, relative_dir)
       dir.create(directory, recursive = TRUE)
-      argv <- c("--vanilla", worker, file.path(root, "oligo_designer.R"), as.character(seed),
+      argv <- c("--vanilla", worker, file.path(root, "oligo_designer.R"), as.character(main_seed),
         "--genome", genome, "--genome-annotation", gff, "--annotation-format", "gff",
         "--target-plasmid", plasmid, if (nzchar(cas)) c("--cas-plasmid", cas),
         "--filtering-level", "2", "--output-dir", directory, "--cds", target)
@@ -128,8 +152,8 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
       result <- tryCatch(read_benchmark_result(directory, target, exit_code), error = function(e)
         list(status = "invalid_result", reason = conditionMessage(e), deletion_start = NA_integer_,
              deletion_end = NA_integer_, deleted_nt = NA_integer_))
-      row <- data.frame(attempt = attempt, run = run, target = target, gene = sampled$gene[[i]],
-        contig = sampled$seqid[[i]], strand = sampled$strand[[i]], gene_nt = sampled$gene_nt[[i]],
+      row <- data.frame(attempt = attempt, run = run, run_seed = panel$run_seed[[i]], target = target, gene = panel$gene[[i]],
+        contig = panel$seqid[[i]], strand = panel$strand[[i]], gene_nt = panel$gene_nt[[i]],
         elapsed_s = elapsed, exit_code = exit_code, as.data.frame(result), result_dir = relative_dir)
       write.table(row, timing_file, sep = ",", row.names = FALSE,
         col.names = !file.exists(timing_file), append = file.exists(timing_file), na = "")
@@ -137,6 +161,7 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
   timing <- read.csv(timing_file)
   totals <- aggregate(elapsed_s ~ run, timing, sum)
+  totals$run_seed <- sampled$run_seed[match(totals$run, sampled$run)]
   totals$attempts <- n2
   totals$successful <- vapply(totals$run, function(r) sum(timing$status[timing$run == r] == "ok"), integer(1))
   write.csv(totals, file.path(out, "run_timings.csv"), row.names = FALSE)
