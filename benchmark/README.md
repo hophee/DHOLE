@@ -115,15 +115,12 @@ Name,Sequence upstream of the manipulation site (>100bp),Reference sequence,Inse
 
 ## 3. Tm отдельных праймеров и ΔTm пары
 
-Из `Design_result.xlsx` каждого варианта сохраните листы `Primer_UHA` и
-`Primer_DHA` как CSV UTF-8 с запятыми, сохранив исходные заголовки и идентификаторы:
+Передайте исходный `Design_result.xlsx` AutoESDCas для каждого варианта,
+который хотите сравнить. Скрипт читает листы `Primer_UHA` и `Primer_DHA` через
+`readxl`. Если окружение `oligo_design` уже установлено, обновите его командой:
 
-```text
-local/runs/auto-results/
-  deletion/Primer_UHA.csv
-  deletion/Primer_DHA.csv
-  bridge/Primer_UHA.csv
-  bridge/Primer_DHA.csv
+```bash
+bash tools/run-r -e 'pak::pkg_install("cran::readxl", lib = .Library, upgrade = FALSE, ask = FALSE)'
 ```
 
 Поддерживаются заголовки `ID,PRIMER_LEFT_WHOLE_SEQUENCE,PRIMER_RIGHT_WHOLE_SEQUENCE`
@@ -131,17 +128,21 @@ local/runs/auto-results/
 [исходного кода AutoESDCas](https://github.com/tibbdc/AutoESDCas/blob/main/edit_sequence_design/module/product_and_decorate_editingSeq.py).
 Дополнительные столбцы игнорируются. ID имеет вид `Name;contig:start-end`, где
 AutoESDCas использует 0-based half-open координаты. Они сверяются с manifest.
-Если для плеча нет успешных дизайнов, сохраните CSV только с заголовком.
-Не заменяйте его листом из `Failed_task.xlsx`.
+Если для плеча нет успешных дизайнов, лист может содержать только заголовки.
 
 ```bash
 bash tools/run-r benchmark/compare_primers.R \
-  local/runs/mg1655-benchmark local/runs/auto-results
+  --dhole-results local/runs/mg1655-benchmark \
+  --deletion local/runs/auto-results/deletion/Design_result.xlsx \
+  --bridge local/runs/auto-results/bridge/Design_result.xlsx
 ```
 
-Полная форма: `RESULTS AUTO_RESULTS [OUTPUT] [GENOME] [OLIGOTM]`.
-По умолчанию: `OUTPUT=RESULTS/comparison`, геном — `local/data/MG1655.fna`,
-расчётчик — `primer3/src/oligotm`. Новый каталог результатов обязателен.
+`--dhole-results` обязателен. Укажите `--deletion`, `--bridge` или оба аргумента.
+Сравнение включает только переданные варианты. Дополнительные параметры
+`--output`, `--genome` и `--oligotm` по умолчанию используют
+`DHOLE_RESULTS/comparison`, `local/data/MG1655.fna` и `primer3/src/oligotm`
+соответственно. Каталог для отчётов должен быть новым. Для отдельных запусков
+по каждому варианту задайте разные пути через `--output`.
 
 У DHOLE берутся выбранные финальные праймеры из WetLab, а не все кандидаты
 Primer3. UHA — плечо перед делецией в референсе, DHA — после неё. Для гена на

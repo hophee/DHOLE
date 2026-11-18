@@ -7,6 +7,13 @@ expect_error <- function(expr, pattern) {
   stopifnot(inherits(error, "error"), grepl(pattern, conditionMessage(error)))
 }
 
+comparison_options <- parse_comparison_args(
+  c("--bridge", "bridge results/Design_result.xlsx", "--dhole-results", "results"))
+stopifnot(identical(comparison_options$dhole_results, "results"), is.na(comparison_options$deletion),
+          identical(comparison_options$bridge, "bridge results/Design_result.xlsx"))
+expect_error(parse_comparison_args(c("--bridge", "bridge.xlsx")), "--dhole-results is required")
+expect_error(parse_comparison_args(c("--dhole-results", "results")), "Pass --deletion")
+
 stopifnot(identical(benchmark_counts(character()), c(10L, 10L, 408151205L)),
           identical(benchmark_counts(c("2", "3", "42")), c(2L, 3L, 42L)))
 for (bad in c("0", "-1", "2.5", "NA", "2147483648")) expect_error(benchmark_counts(bad), "positive integers")
@@ -46,10 +53,14 @@ dir.create(tmp)
 on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
 set.seed(4)
 genome <- paste(sample(c("A", "C", "G", "T"), 1200, replace = TRUE), collapse = "")
+seqs <- c("TCCGTTGACATCTGATCGTA", "AATCCTGAATGGCTCTATGC",
+          "GCCTATAATCACGTGTCTGA", "AGCTTTGAGCATACAGGTTG")
+substr(genome, 251, 270) <- seqs[[1]]
+substr(genome, 381, 400) <- rc(seqs[[2]])
+substr(genome, 601, 620) <- seqs[[3]]
+substr(genome, 751, 770) <- rc(seqs[[4]])
 genome_path <- file.path(tmp, "genome.fna")
 writeLines(c(">chr", genome), genome_path)
-seqs <- c(substr(genome, 251, 270), rc(substr(genome, 381, 400)),
-          substr(genome, 601, 620), rc(substr(genome, 751, 770)))
 tail_base <- setdiff(c("A", "C", "G", "T"), substr(genome, 250, 250))[[1]]
 tailed <- paste0("ACG", tail_base, seqs[[1]])
 stopifnot(annealing_suffix(tailed, genome) == seqs[[1]])
@@ -60,7 +71,7 @@ expect_error(annealing_suffix(seqs[[1]], paste0(genome, genome)), "Ambiguous")
 purposes <- c("left_arm_forward_primer", "left_arm_reverse_primer", "right_arm_forward_primer",
               "right_arm_reverse_primer", "screening_forward_primer", "screening_reverse_primer")
 manifest <- list()
-auto <- file.path(tmp, "auto")
+auto <- c(deletion = "test/fixtures/auto-deletion.xlsx", bridge = "test/fixtures/auto-bridge.xlsx")
 for (run in 1:2) {
   attempt <- sprintf("run_%03d_gene_0001", run)
   wet <- file.path(tmp, "raw", attempt, "WetLab/b1_results")
@@ -80,32 +91,19 @@ for (run in 1:2) {
 manifest <- do.call(rbind, manifest)
 manifest_path <- file.path(tmp, "manifest.csv")
 write.csv(manifest, manifest_path, row.names = FALSE)
-for (variant in c("deletion", "bridge")) {
-  dir.create(file.path(auto, variant), recursive = TRUE)
-  for (arm in c("UHA", "DHA")) {
-    m <- manifest[manifest$variant == variant, ]
-    if (variant == "bridge" && arm == "DHA") m <- m[1, , drop = FALSE]
-    pair <- if (arm == "UHA") c(tailed, seqs[[2]]) else seqs[3:4]
-    x <- data.frame(ID = paste0(m$Name, ";chr:400-600"),
-      PRIMER_LEFT_WHOLE_SEQUENCE = pair[[1]], PRIMER_RIGHT_WHOLE_SEQUENCE = pair[[2]])
-    if (arm == "DHA") names(x) <- c("Region", "primer_f_seq_(5'-3')", "primer_r_seq_(5'-3')")
-    write.csv(x, file.path(auto, variant, paste0("Primer_", arm, ".csv")), row.names = FALSE)
-  }
-}
-parsed <- read_auto_arm(file.path(auto, "bridge/Primer_DHA.csv"), "DHA")
-stopifnot(nrow(parsed) == 1L, parsed$region == "chr:400-600")
-empty <- parsed[FALSE, c("ID", "forward", "reverse")]
-names(empty) <- c("ID", "PRIMER_LEFT_WHOLE_SEQUENCE", "PRIMER_RIGHT_WHOLE_SEQUENCE")
-write.csv(empty, file.path(tmp, "empty.csv"), row.names = FALSE)
-stopifnot(nrow(read_auto_arm(file.path(tmp, "empty.csv"), "UHA")) == 0L)
+parsed <- read_auto_arm(auto[["deletion"]], "DHA")
+stopifnot(nrow(parsed) == 2L, all(parsed$region == "chr:400-600"),
+          all(parsed$forward == seqs[[3]]))
+stopifnot(nrow(read_auto_arm(auto[["bridge"]], "DHA")) == 0L)
+expect_error(read_auto_arm(auto[["bridge"]], "absent"), "Primer_absent")
 
 buffer <- c(monovalent_salt_mm = 50, divalent_salt_mm = 1.5, dntp_mm = 0.6, dna_nm = 50)
 oligotm <- Sys.getenv("DHOLE_TEST_OLIGOTM", "primer3/src/oligotm")
 if (file.exists(oligotm)) {
   stopifnot(abs(calculate_tm("GCTCTTTTGGTTATGTTGGTATGC", oligotm, buffer) - 58.897687) < 1e-5)
   out <- compare(tmp, manifest_path, auto, file.path(tmp, "comparison"), genome_path, oligotm, buffer)
-  stopifnot(nrow(out$primers) == 16L, sum(out$primers$status == "matched") == 14L,
-    nrow(out$pairs) == 8L, sum(out$summary$matched_pairs) == 7L,
+  stopifnot(nrow(out$primers) == 16L, sum(out$primers$status == "matched") == 12L,
+    nrow(out$pairs) == 8L, sum(out$summary$matched_pairs) == 6L,
     all(out$primers$tm_difference_c[out$primers$status == "matched"] == 0),
     all(out$pairs$delta_tm_difference_c[!is.na(out$pairs$delta_tm_difference_c)] == 0))
   toy <- out$primers[1:2, ]
@@ -114,9 +112,13 @@ if (file.exists(oligotm)) {
   paired <- pair_comparison(toy)
   stopifnot(paired$dhole_delta_tm_c == 3, paired$auto_delta_tm_c == 8, paired$delta_tm_difference_c == 5)
   expect_error(compare(tmp, manifest_path, auto, file.path(tmp, "comparison"), genome_path, oligotm, buffer), "already exists")
-  bad <- read.csv(file.path(auto, "deletion/Primer_UHA.csv"), check.names = FALSE)
-  bad$ID[[1]] <- sub("400-600", "401-600", bad$ID[[1]])
-  write.csv(bad, file.path(auto, "deletion/Primer_UHA.csv"), row.names = FALSE)
+  bridge <- compare(tmp, manifest_path, auto["bridge"], file.path(tmp, "bridge"), genome_path, oligotm, buffer)
+  stopifnot(nrow(bridge$primers) == 8L, all(bridge$primers$variant == "bridge"),
+    sum(bridge$primers$status == "missing_auto_design") == 4L)
+  expect_error(compare(tmp, manifest_path, c(deletion = auto[["bridge"]]), file.path(tmp, "swapped"),
+    genome_path, oligotm, buffer), "absent from the deletion manifest")
+  manifest$deletion_start[[1]] <- 402L
+  write.csv(manifest, manifest_path, row.names = FALSE)
   expect_error(compare(tmp, manifest_path, auto, file.path(tmp, "bad"), genome_path, oligotm, buffer), "coordinates differ")
   writeLines(c(">chr", paste0("A", genome)), genome_path)
   expect_error(compare(tmp, manifest_path, auto, file.path(tmp, "wrong"), genome_path, oligotm, buffer), "Genome differs")

@@ -28,19 +28,25 @@ annealing_suffix <- function(primer, template) {
 }
 
 read_auto_arm <- function(path, arm) {
-  x <- read_csv_text(path)
+  sheet <- paste0("Primer_", arm)
+  location <- paste0(path, " [", sheet, "]")
+  x <- tryCatch(
+    as.data.frame(readxl::read_xlsx(path, sheet = sheet, col_types = "text",
+                                  trim_ws = FALSE, .name_repair = "minimal")),
+    error = function(e) stop("Cannot read ", location, ": ", conditionMessage(e), call. = FALSE)
+  )
   modern <- c("ID", "PRIMER_LEFT_WHOLE_SEQUENCE", "PRIMER_RIGHT_WHOLE_SEQUENCE")
   original <- c("Region", "primer_f_seq_(5'-3')", "primer_r_seq_(5'-3')")
   columns <- if (all(modern %in% names(x))) modern else original
-  if (!all(columns %in% names(x))) stop("Unsupported AutoESDCas columns: ", path)
+  if (!all(columns %in% names(x))) stop("Unsupported AutoESDCas columns: ", location)
   x <- x[, columns, drop = FALSE]
   names(x) <- c("ID", "forward", "reverse")
   if (anyNA(x$ID) || any(!grepl("^[^;]+;[^;]+:[0-9]+-[0-9]+$", x$ID)))
-    stop("Expected Name;contig:start-end IDs in ", path)
+    stop("Expected Name;contig:start-end IDs in ", location)
   x$Name <- sub(";.*$", "", x$ID)
   x$region <- sub("^[^;]+;", "", x$ID)
   x$arm <- rep(arm, nrow(x))
-  if (anyDuplicated(x$Name)) stop("Multiple designs for one Name in ", path, "; select one explicitly")
+  if (anyDuplicated(x$Name)) stop("Multiple designs for one Name in ", location, "; select one explicitly")
   x$forward <- check_dna(x$forward)
   x$reverse <- check_dna(x$reverse)
   x
@@ -87,7 +93,7 @@ pair_comparison <- function(primers) {
   pairs
 }
 
-compare <- function(results, manifest_path, auto_dir, out, genome_path, oligotm, buffer) {
+compare <- function(results, manifest_path, auto_paths, out, genome_path, oligotm, buffer) {
   if (file.exists(out)) stop("Output already exists: ", out)
   manifest <- read_csv_text(manifest_path)
   required <- c("Name", "variant", "attempt", "run", "target", "contig", "strand", "deletion_start",
@@ -95,6 +101,10 @@ compare <- function(results, manifest_path, auto_dir, out, genome_path, oligotm,
   if (!all(required %in% names(manifest)) || !nrow(manifest) || anyDuplicated(manifest$Name) ||
       anyNA(manifest[, required]) || !all(manifest$variant %in% c("deletion", "bridge")))
     stop("Invalid export manifest")
+  missing_variants <- setdiff(names(auto_paths), manifest$variant)
+  if (length(missing_variants))
+    stop("Requested variants absent from the manifest: ", paste(missing_variants, collapse = ", "))
+  manifest <- manifest[manifest$variant %in% names(auto_paths), , drop = FALSE]
   if (!all(manifest$genome_md5 == unname(tools::md5sum(genome_path))))
     stop("Genome differs from the FASTA used for AutoESDCas export")
   genomes <- Biostrings::readDNAStringSet(genome_path)
@@ -102,12 +112,12 @@ compare <- function(results, manifest_path, auto_dir, out, genome_path, oligotm,
   if (length(genomes) != 1L || !all(manifest$contig == names(genomes))) stop("Genome/manifest contig mismatch")
   genome <- as.character(genomes[[1]])
   auto <- list()
-  for (variant in c("deletion", "bridge")) {
+  for (variant in names(auto_paths)) {
+    path <- auto_paths[[variant]]
     for (arm in c("UHA", "DHA")) {
-      path <- file.path(auto_dir, variant, paste0("Primer_", arm, ".csv"))
       rows <- read_auto_arm(path, arm)
       if (any(!rows$Name %in% manifest$Name[manifest$variant == variant]))
-        stop("AutoESDCas names absent from the matching manifest variant: ", path)
+        stop("AutoESDCas names absent from the ", variant, " manifest rows: ", path, " [Primer_", arm, "]")
       rows$variant <- rep(variant, nrow(rows))
       auto[[length(auto) + 1L]] <- rows
     }
@@ -172,23 +182,44 @@ compare <- function(results, manifest_path, auto_dir, out, genome_path, oligotm,
   invisible(list(primers = primers, pairs = pairs, summary = summary))
 }
 
+parse_comparison_args <- function(args) {
+  parser <- argparser::arg_parser(
+    "Compare DHOLE with AutoESDCas. Pass --dhole-results and at least one of --deletion or --bridge.",
+    name = "bash tools/run-r benchmark/compare_primers.R",
+    hide.opts = TRUE
+  )
+  parser <- argparser::add_argument(parser,
+    c("--dhole-results", "--deletion", "--bridge", "--output", "--genome", "--oligotm"),
+    help = c("DHOLE benchmark directory containing autoesdcas/manifest.csv",
+             "AutoESDCas Design_result.xlsx for deletion",
+             "AutoESDCas Design_result.xlsx for bridge",
+             "New output directory (default: DHOLE_RESULTS/comparison)",
+             "Reference FASTA (default: local/data/MG1655.fna)",
+             "Primer3 executable (default: primer3/src/oligotm)"))
+  options <- argparser::parse_args(parser, args)
+  if (is.na(options$dhole_results) || !nzchar(options$dhole_results))
+    stop("--dhole-results is required; see --help", call. = FALSE)
+  if (is.na(options$deletion) && is.na(options$bridge))
+    stop("Pass --deletion, --bridge, or both; see --help", call. = FALSE)
+  options
+}
+
 main <- function(args = commandArgs(trailingOnly = TRUE)) {
-  if (any(args %in% c("-h", "--help"))) {
-    cat("Usage: bash tools/run-r benchmark/compare_primers.R RESULTS AUTO_RESULTS [OUTPUT] [GENOME] [OLIGOTM]\n",
-        "AUTO_RESULTS/{deletion,bridge}/{Primer_UHA,Primer_DHA}.csv: exported AutoESDCas sheets.\n",
-        "Manifest: RESULTS/autoesdcas/manifest.csv. See benchmark/README.md.\n")
-    return(invisible(NULL))
-  }
-  if (length(args) < 2L || length(args) > 5L) stop("Expected RESULTS AUTO_RESULTS; see --help")
+  options <- parse_comparison_args(args)
+  if (!requireNamespace("readxl", quietly = TRUE))
+    stop("Missing R package readxl in oligo_design; see benchmark/README.md", call. = FALSE)
+  results <- options$dhole_results
+  auto_paths <- c(deletion = options$deletion, bridge = options$bridge)
+  auto_paths <- auto_paths[!is.na(auto_paths)]
   script <- sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[[1]])
   root <- normalizePath(file.path(dirname(script), ".."), mustWork = TRUE)
   dhole <- new.env()
   source(file.path(root, "oligo_designer.R"), local = dhole)
-  out <- if (length(args) >= 3L) args[[3]] else file.path(args[[1]], "comparison")
-  genome <- if (length(args) >= 4L) args[[4]] else file.path(root, "local/data/MG1655.fna")
-  oligotm <- if (length(args) >= 5L) args[[5]] else file.path(root, "primer3/src/oligotm")
+  out <- if (is.na(options$output)) file.path(results, "comparison") else options$output
+  genome <- if (is.na(options$genome)) file.path(root, "local/data/MG1655.fna") else options$genome
+  oligotm <- if (is.na(options$oligotm)) file.path(root, "primer3/src/oligotm") else options$oligotm
   if (!file.exists(oligotm)) stop("Missing Primer3 oligotm: ", oligotm, "; run install.sh")
-  compare(args[[1]], file.path(args[[1]], "autoesdcas/manifest.csv"), args[[2]], out, genome,
+  compare(results, file.path(results, "autoesdcas/manifest.csv"), auto_paths, out, genome,
           oligotm, dhole$primer3_buffer_parameters())
 }
 
