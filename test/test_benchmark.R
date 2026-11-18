@@ -97,11 +97,19 @@ stopifnot(nrow(parsed) == 2L, all(parsed$region == "chr:400-600"),
 stopifnot(nrow(read_auto_arm(auto[["bridge"]], "DHA")) == 0L)
 expect_error(read_auto_arm(auto[["bridge"]], "absent"), "Primer_absent")
 
+plot_path <- file.path(tmp, "plot.png")
+plot_primers <- data.frame(variant = c("deletion", "bridge"), arm = c("UHA", "DHA"),
+  dhole_tm_c = c(56, 58), auto_tm_c = c(55, 59))
+plot_pairs <- transform(plot_primers, dhole_delta_tm_c = c(1, 2), auto_delta_tm_c = c(0, NA_real_))
+plot_primer_comparison(plot_primers, plot_pairs, names(auto), plot_path)
+stopifnot(file.info(plot_path)$size > 0L)
+
 buffer <- c(monovalent_salt_mm = 50, divalent_salt_mm = 1.5, dntp_mm = 0.6, dna_nm = 50)
 oligotm <- Sys.getenv("DHOLE_TEST_OLIGOTM", "primer3/src/oligotm")
 if (file.exists(oligotm)) {
   stopifnot(abs(calculate_tm("GCTCTTTTGGTTATGTTGGTATGC", oligotm, buffer) - 58.897687) < 1e-5)
   out <- compare(tmp, manifest_path, auto, file.path(tmp, "comparison"), genome_path, oligotm, buffer)
+  stopifnot(file.info(file.path(tmp, "comparison", "primer_comparison.png"))$size > 0L)
   stopifnot(nrow(out$primers) == 16L, sum(out$primers$status == "matched") == 12L,
     nrow(out$pairs) == 8L, sum(out$summary$matched_pairs) == 6L,
     all(out$primers$tm_difference_c[out$primers$status == "matched"] == 0),

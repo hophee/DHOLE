@@ -93,6 +93,42 @@ pair_comparison <- function(primers) {
   pairs
 }
 
+plot_primer_comparison <- function(primers, pairs, variants, path) {
+  outline <- "#252A34"
+  fills <- c(deletion = "#D55E00", bridge = "#0072B2")
+  shapes <- c(UHA = 21, DHA = 24)
+  labels <- c(deletion = "AutoESDCas-deletion", bridge = "AutoESDCas-insertion (bridge)")
+  auto_labels <- if (length(variants) == 1L) "AutoESDCas" else labels[variants]
+
+  grDevices::png(path, width = 1400, height = 740, res = 140)
+  on.exit(grDevices::dev.off(), add = TRUE)
+  layout(matrix(c(1, 2, 3, 3), nrow = 2, byrow = TRUE), heights = c(1, 0.12))
+  par(mar = c(4, 4, 2.5, 1), las = 1, pty = "s", mgp = c(2.4, 0.7, 0))
+
+  panel <- function(rows, auto, dhole, title, from_zero = FALSE) {
+    matched <- is.finite(rows[[auto]]) & is.finite(rows[[dhole]])
+    x <- rows[[auto]][matched]
+    y <- rows[[dhole]][matched]
+    limits <- if (length(x)) range(c(x, y)) else c(0, 1)
+    if (from_zero) limits <- c(0, max(limits))
+    if (diff(limits) == 0) limits <- if (from_zero) c(0, 1) else limits + c(-0.5, 0.5)
+    plot(x, y, type = "n", xlim = limits, ylim = limits, asp = 1,
+         xlab = "AutoESDCas (\u00b0C)", ylab = "DHOLE (\u00b0C)", main = title)
+    abline(0, 1, col = "#A7ADB5", lty = 2)
+    points(x, y, pch = shapes[rows$arm[matched]], col = outline,
+           bg = fills[rows$variant[matched]], cex = 1.05)
+    if (!length(x)) text(mean(limits), limits[1] + 0.65 * diff(limits), "No matched results")
+  }
+
+  panel(primers, "auto_tm_c", "dhole_tm_c", "Tm per primer")
+  panel(pairs, "auto_delta_tm_c", "dhole_delta_tm_c", "Absolute \u0394Tm per pair", from_zero = TRUE)
+  par(mar = rep(0, 4), pty = "m")
+  plot.new()
+  legend("center", c("DHOLE", auto_labels, names(shapes)), horiz = TRUE, bty = "n", text.width = NA,
+         pch = c(rep(22, 1L + length(variants)), shapes), col = outline,
+         pt.bg = c("white", fills[variants], "white", "white"), pt.cex = 1.15)
+}
+
 compare <- function(results, manifest_path, auto_paths, out, genome_path, oligotm, buffer) {
   if (file.exists(out)) stop("Output already exists: ", out)
   manifest <- read_csv_text(manifest_path)
@@ -171,6 +207,7 @@ compare <- function(results, manifest_path, auto_paths, out, genome_path, oligot
   write.csv(primers, file.path(out, "primer_comparison.csv"), row.names = FALSE, na = "")
   write.csv(pairs, file.path(out, "pair_comparison.csv"), row.names = FALSE, na = "")
   write.csv(summary, file.path(out, "summary.csv"), row.names = FALSE, na = "")
+  plot_primer_comparison(primers, pairs, names(auto_paths), file.path(out, "primer_comparison.png"))
   writeLines(c("Both tools: annealing sequences, Primer3 oligotm -tp 1 -sc 1.",
     paste(names(buffer), buffer, sep = "="), paste("oligotm=", normalizePath(oligotm)),
     paste("genome_md5=", tools::md5sum(genome_path)),
