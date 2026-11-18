@@ -104,6 +104,26 @@ plot_pairs <- transform(plot_primers, dhole_delta_tm_c = c(1, 2), auto_delta_tm_
 plot_primer_comparison(plot_primers, plot_pairs, names(auto), plot_path)
 stopifnot(file.info(plot_path)$size > 0L)
 
+staged_report <- function(contents) {
+  stage <- tempfile("stage-", tmpdir = tmp)
+  dir.create(stage)
+  writeLines(contents, file.path(stage, "summary.txt"))
+  stage
+}
+comparison_dir <- file.path(tmp, "rotate[case]")
+publish_comparison(staged_report("first"), comparison_dir)
+publish_comparison(staged_report("second"), comparison_dir)
+dir.create(paste0(comparison_dir, "-7"))
+dir.create(paste0(comparison_dir, "-99-extra"))
+publish_comparison(staged_report("third"), comparison_dir)
+stopifnot(identical(readLines(file.path(paste0(comparison_dir, "-1"), "summary.txt")), "first"),
+          identical(readLines(file.path(paste0(comparison_dir, "-8"), "summary.txt")), "second"),
+          identical(readLines(file.path(comparison_dir, "summary.txt")), "third"))
+expect_error(suppressWarnings(publish_comparison(file.path(tmp, "missing-stage"), comparison_dir)),
+             "Cannot publish")
+stopifnot(identical(readLines(file.path(comparison_dir, "summary.txt")), "third"),
+          !dir.exists(paste0(comparison_dir, "-9")), !dir.exists(paste0(comparison_dir, ".lock")))
+
 buffer <- c(monovalent_salt_mm = 50, divalent_salt_mm = 1.5, dntp_mm = 0.6, dna_nm = 50)
 oligotm <- Sys.getenv("DHOLE_TEST_OLIGOTM", "primer3/src/oligotm")
 if (file.exists(oligotm)) {
@@ -119,10 +139,11 @@ if (file.exists(oligotm)) {
   toy$auto_tm_c <- c(63, 55)
   paired <- pair_comparison(toy)
   stopifnot(paired$dhole_delta_tm_c == 3, paired$auto_delta_tm_c == 8, paired$delta_tm_difference_c == 5)
-  expect_error(compare(tmp, manifest_path, auto, file.path(tmp, "comparison"), genome_path, oligotm, buffer), "already exists")
-  bridge <- compare(tmp, manifest_path, auto["bridge"], file.path(tmp, "bridge"), genome_path, oligotm, buffer)
+  bridge <- compare(tmp, manifest_path, auto["bridge"], file.path(tmp, "comparison"), genome_path, oligotm, buffer)
   stopifnot(nrow(bridge$primers) == 8L, all(bridge$primers$variant == "bridge"),
-    sum(bridge$primers$status == "missing_auto_design") == 4L)
+    sum(bridge$primers$status == "missing_auto_design") == 4L,
+    nrow(read.csv(file.path(tmp, "comparison-1", "primer_comparison.csv"))) == 16L,
+    nrow(read.csv(file.path(tmp, "comparison", "primer_comparison.csv"))) == 8L)
   expect_error(compare(tmp, manifest_path, c(deletion = auto[["bridge"]]), file.path(tmp, "swapped"),
     genome_path, oligotm, buffer), "absent from the deletion manifest")
   manifest$deletion_start[[1]] <- 402L

@@ -95,8 +95,8 @@ pair_comparison <- function(primers) {
 
 plot_primer_comparison <- function(primers, pairs, variants, path) {
   outline <- "#252A34"
-  fills <- c(deletion = "#D55E00", bridge = "#0072B2")
-  shapes <- c(UHA = 21, DHA = 24)
+  fills <- c(UHA = "#0072B2", DHA = "#D55E00")
+  shapes <- c(deletion = 21, bridge = 24)
   labels <- c(deletion = "AutoESDCas-deletion", bridge = "AutoESDCas-insertion (bridge)")
   auto_labels <- if (length(variants) == 1L) "AutoESDCas" else labels[variants]
 
@@ -115,8 +115,8 @@ plot_primer_comparison <- function(primers, pairs, variants, path) {
     plot(x, y, type = "n", xlim = limits, ylim = limits, asp = 1,
          xlab = "AutoESDCas (\u00b0C)", ylab = "DHOLE (\u00b0C)", main = title)
     abline(0, 1, col = "#A7ADB5", lty = 2)
-    points(x, y, pch = shapes[rows$arm[matched]], col = outline,
-           bg = fills[rows$variant[matched]], cex = 1.05)
+    points(x, y, pch = shapes[rows$variant[matched]], col = outline,
+           bg = fills[rows$arm[matched]], cex = 1.05)
     if (!length(x)) text(mean(limits), limits[1] + 0.65 * diff(limits), "No matched results")
   }
 
@@ -124,13 +124,45 @@ plot_primer_comparison <- function(primers, pairs, variants, path) {
   panel(pairs, "auto_delta_tm_c", "dhole_delta_tm_c", "Absolute \u0394Tm per pair", from_zero = TRUE)
   par(mar = rep(0, 4), pty = "m")
   plot.new()
-  legend("center", c("DHOLE", auto_labels, names(shapes)), horiz = TRUE, bty = "n", text.width = NA,
-         pch = c(rep(22, 1L + length(variants)), shapes), col = outline,
-         pt.bg = c("white", fills[variants], "white", "white"), pt.cex = 1.15)
+  legend("center", c(auto_labels, names(fills)), horiz = TRUE, bty = "n", text.width = NA,
+         pch = c(shapes[variants], 22, 22), col = outline,
+         pt.bg = c(rep("white", length(variants)), fills), pt.cex = 1.15)
+}
+
+publish_comparison <- function(staged, out) {
+  lock <- paste0(out, ".lock")
+  if (!dir.create(lock, showWarnings = FALSE)) stop("Cannot lock output directory: ", out)
+  on.exit(unlink(lock, recursive = TRUE, expand = FALSE), add = TRUE)
+  if (file.exists(out) && !dir.exists(out)) stop("Output path is a file: ", out)
+
+  archive <- NULL
+  if (dir.exists(out)) {
+    parent <- dirname(out)
+    prefix <- paste0(basename(out), "-")
+    entries <- list.files(parent, all.files = TRUE, no.. = TRUE)
+    directories <- entries[dir.exists(file.path(parent, entries))]
+    suffixes <- substring(directories[startsWith(directories, prefix)], nchar(prefix) + 1L)
+    number <- max(0, as.numeric(suffixes[grepl("^[0-9]+$", suffixes)]))
+    repeat {
+      next_number <- number + 1
+      if (!is.finite(next_number) || next_number <= number)
+        stop("Cannot increment the output archive suffix for ", out)
+      archive <- paste0(out, "-", sprintf("%.0f", next_number))
+      if (!file.exists(archive) && !basename(archive) %in% entries) break
+      number <- next_number
+    }
+    if (!file.rename(out, archive)) stop("Cannot move previous results to ", archive)
+  }
+  if (!file.rename(staged, out)) {
+    if (!is.null(archive) && !file.exists(out) && file.rename(archive, out)) archive <- NULL
+    stop("Cannot publish results to ", out,
+         if (!is.null(archive)) paste0(". Previous results are in ", archive))
+  }
+  if (!is.null(archive)) message("Previous results: ", archive)
 }
 
 compare <- function(results, manifest_path, auto_paths, out, genome_path, oligotm, buffer) {
-  if (file.exists(out)) stop("Output already exists: ", out)
+  if (basename(out) %in% c("", ".", "..")) stop("Specify a named output directory: ", out)
   manifest <- read_csv_text(manifest_path)
   required <- c("Name", "variant", "attempt", "run", "target", "contig", "strand", "deletion_start",
                 "deletion_end", "result_dir", "target_dir", "genome_md5")
@@ -203,18 +235,25 @@ compare <- function(results, manifest_path, auto_paths, out, genome_path, oligot
       mean_auto_delta_tm_c = if (any(paired)) mean(x$auto_delta_tm_c[paired]) else NA_real_,
       mean_delta_tm_difference_c = if (any(paired)) mean(x$delta_tm_difference_c[paired]) else NA_real_)
   }))
-  if (!dir.create(out, recursive = TRUE)) stop("Cannot create output: ", out)
-  write.csv(primers, file.path(out, "primer_comparison.csv"), row.names = FALSE, na = "")
-  write.csv(pairs, file.path(out, "pair_comparison.csv"), row.names = FALSE, na = "")
-  write.csv(summary, file.path(out, "summary.csv"), row.names = FALSE, na = "")
-  plot_primer_comparison(primers, pairs, names(auto_paths), file.path(out, "primer_comparison.png"))
+  parent <- dirname(out)
+  if (!dir.exists(parent)) dir.create(parent, recursive = TRUE, showWarnings = FALSE)
+  if (!dir.exists(parent)) stop("Cannot create output parent directory: ", parent)
+  parent <- normalizePath(parent, winslash = "/", mustWork = TRUE)
+  staged <- tempfile(".comparison-", tmpdir = parent)
+  if (!dir.create(staged)) stop("Cannot create staging directory: ", staged)
+  on.exit(unlink(staged, recursive = TRUE, expand = FALSE), add = TRUE)
+  write.csv(primers, file.path(staged, "primer_comparison.csv"), row.names = FALSE, na = "")
+  write.csv(pairs, file.path(staged, "pair_comparison.csv"), row.names = FALSE, na = "")
+  write.csv(summary, file.path(staged, "summary.csv"), row.names = FALSE, na = "")
+  plot_primer_comparison(primers, pairs, names(auto_paths), file.path(staged, "primer_comparison.png"))
   writeLines(c("Both tools: annealing sequences, Primer3 oligotm -tp 1 -sc 1.",
     paste(names(buffer), buffer, sep = "="), paste("oligotm=", normalizePath(oligotm)),
     paste("genome_md5=", tools::md5sum(genome_path)),
     "AutoESDCas: longest exact 3-prime genomic match >=15 nt; no mismatches allowed.",
     "Delta Tm = abs(Tm_F - Tm_R) within each UHA or DHA pair of the same gene and attempt.",
     "Differences = AutoESDCas minus DHOLE. Summary means use matched pairs only.",
-    "Repeated attempts are retained; they are not independent biological replicates."), file.path(out, "methods.txt"))
+    "Repeated attempts are retained; they are not independent biological replicates."), file.path(staged, "methods.txt"))
+  publish_comparison(staged, file.path(parent, basename(out)))
   message("Results: ", out, "\nMatched primers: ", sum(primers$status == "matched"), "/", nrow(primers))
   invisible(list(primers = primers, pairs = pairs, summary = summary))
 }
@@ -230,7 +269,7 @@ parse_comparison_args <- function(args) {
     help = c("DHOLE benchmark directory containing autoesdcas/manifest.csv",
              "AutoESDCas Design_result.xlsx for deletion",
              "AutoESDCas Design_result.xlsx for bridge",
-             "New output directory (default: DHOLE_RESULTS/comparison)",
+             "Output directory (default: DHOLE_RESULTS/comparison). Existing results are saved with a numbered suffix.",
              "Reference FASTA (default: local/data/MG1655.fna)",
              "Primer3 executable (default: primer3/src/oligotm)"))
   options <- argparser::parse_args(parser, args)
